@@ -250,7 +250,7 @@ export default function HistoryPanel() {
 
       {/* Detail Dialog */}
       <Dialog open={!!selectedItem} onOpenChange={(open) => !open && setSelectedItem(null)}>
-        <DialogContent className="max-w-[1600px] w-[95vw] h-[90vh] overflow-hidden flex flex-col p-0 rounded-[2rem] border-primary/20 bg-card/95 backdrop-blur-3xl shadow-[0_50px_100px_rgba(0,0,0,0.4)]">
+        <DialogContent showCloseButton={false} className="max-w-[1600px] w-[95vw] h-[90vh] overflow-hidden flex flex-col p-0 rounded-[2rem] border-primary/20 bg-card/95 backdrop-blur-3xl shadow-[0_50px_100px_rgba(0,0,0,0.4)]">
           {selectedItem && (
             <>
               <DialogHeader className="p-5 pb-4 sm:p-10 sm:pb-6 border-b border-border/20 flex-shrink-0">

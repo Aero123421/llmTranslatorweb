@@ -77,13 +77,6 @@ export default function TranslationInterface() {
   }, [])
 
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = `${Math.max(300, textareaRef.current.scrollHeight)}px`
-    }
-  }, [sourceText])
-
-  useEffect(() => {
     setLocalSourceLanguage(settings.sourceLanguage)
     setLocalTargetLanguage(settings.targetLanguage)
   }, [settings.sourceLanguage, settings.targetLanguage])
@@ -327,7 +320,7 @@ export default function TranslationInterface() {
                 {sourceText.trim() && <SpeakerButtons text={sourceText} lang={localSourceLanguage} />}
               </div>
               <div className="relative rounded-[2.5rem] border transition-all duration-500 bg-card border-primary/20 shadow-xl shadow-primary/5">
-                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => setSourceText(e.target.value)} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed min-h-[200px] md:min-h-[300px]" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
+                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => setSourceText(e.target.value)} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed h-[260px] md:h-[340px] overflow-y-auto" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
                 <div className="absolute bottom-6 right-8 md:bottom-8 md:right-10 text-[10px] font-black text-muted-foreground/20 uppercase tracking-widest">{sourceText.length} 文字</div>
               </div>
             </div>
