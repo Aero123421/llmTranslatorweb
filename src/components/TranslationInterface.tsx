@@ -77,6 +77,21 @@ export default function TranslationInterface() {
   }, [])
 
   useEffect(() => {
+    const el = textareaRef.current
+    if (!el || typeof window === 'undefined') return
+
+    const prevScrollTop = el.scrollTop
+    const minHeight = window.innerWidth >= 768 ? 380 : 280
+    const maxHeight = Math.max(minHeight, Math.floor(window.innerHeight * 0.6))
+
+    el.style.height = 'auto'
+    const nextHeight = Math.min(el.scrollHeight, maxHeight)
+    el.style.height = `${Math.max(minHeight, nextHeight)}px`
+    el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden'
+    el.scrollTop = prevScrollTop
+  }, [sourceText])
+
+  useEffect(() => {
     setLocalSourceLanguage(settings.sourceLanguage)
     setLocalTargetLanguage(settings.targetLanguage)
   }, [settings.sourceLanguage, settings.targetLanguage])
@@ -320,13 +335,13 @@ export default function TranslationInterface() {
                 {sourceText.trim() && <SpeakerButtons text={sourceText} lang={localSourceLanguage} />}
               </div>
               <div className="relative rounded-[2.5rem] border transition-all duration-500 bg-card border-primary/20 shadow-xl shadow-primary/5">
-                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => setSourceText(e.target.value)} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed h-[260px] md:h-[340px] overflow-y-auto" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
+                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => setSourceText(e.target.value)} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed min-h-[280px] md:min-h-[380px] max-h-[60vh] overflow-y-auto" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
                 <div className="absolute bottom-6 right-8 md:bottom-8 md:right-10 text-[10px] font-black text-muted-foreground/20 uppercase tracking-widest">{sourceText.length} 文字</div>
               </div>
             </div>
 
             {/* Middle Action Bridge */}
-            <div className="flex lg:flex-col items-center justify-center py-0 my-[-2rem] translate-y-12 lg:translate-y-0 lg:my-0 lg:py-0 h-full lg:min-h-[300px] z-10 relative pointer-events-none">
+            <div className="flex lg:flex-col items-center justify-center py-0 my-[-2rem] translate-y-12 lg:translate-y-0 lg:my-0 lg:py-0 h-full lg:min-h-[300px] z-10 relative pointer-events-none lg:sticky lg:top-1/2 lg:-translate-y-1/2">
               <div className="relative group pointer-events-auto">
                 {/* Decorative background glow */}
                 <div className={`absolute -inset-4 bg-gradient-to-tr from-primary/40 to-blue-400/40 rounded-full blur-2xl opacity-0 transition-all duration-1000 group-hover:opacity-100 ${sourceText.trim() && !loading ? 'opacity-50 animate-pulse' : ''}`} />
