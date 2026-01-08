@@ -139,6 +139,30 @@
   input {
     @apply text-foreground font-bold;
   }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-muted-foreground/20 rounded-full hover:bg-muted-foreground/40 transition-colors;
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    @apply bg-muted-foreground/10 hover:bg-muted-foreground/30;
+  }
+
+  /* Invisible scrollbar utility */
+  .scrollbar-hidden {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hidden::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 @keyframes shimmer {

@@ -7,15 +7,27 @@ export type Language = 'japanese' | 'english' | 'russian' | 'chinese' | 'korean'
 
 export type OutputFormat = 'word' | 'sentence' | 'full' | 'custom'
 
+export interface RoutingStep {
+  provider: LLMProvider
+  model: string
+}
+
 export interface TranslationSettings {
   sourceLanguage: Language
   targetLanguage: Language
+  explanationLanguage: Language | 'auto'
   provider: LLMProvider
-  // Provider-specific API keys
+  model?: string
+  routingSteps: RoutingStep[]
+  routingCount: number
   apiKeys: Record<LLMProvider, string>
   customEndpoint?: string
-  model?: string
   temperature?: number
+  speechRate: number
+  speechPitch: number
+  // Voice preferences
+  voicePreferences: Record<Language, string | undefined>
+  englishUkVoiceName?: string // Special case for UK English
   showWordList: boolean
   showDetailedExplanation: boolean
   showNuanceExplanation: boolean
@@ -25,36 +37,61 @@ export interface TranslationSettings {
 interface SettingsStore extends TranslationSettings {
   setSourceLanguage: (language: Language) => void
   setTargetLanguage: (language: Language) => void
+  setExplanationLanguage: (language: Language | 'auto') => void
   setProvider: (provider: LLMProvider) => void
-  setApiKey: (apiKey: string) => void  // Sets API key for the current provider
-  setCustomEndpoint: (endpoint?: string) => void
   setModel: (model?: string) => void
+  setRoutingCount: (count: number) => void
+  setRoutingStep: (index: number, step: Partial<RoutingStep>) => void
+  setApiKey: (apiKey: string) => void
+  setApiKeys: (apiKeys: Record<LLMProvider, string>) => void
+  setCustomEndpoint: (endpoint?: string) => void
   setTemperature: (temperature?: number) => void
+  setSpeechRate: (rate: number) => void
+  setSpeechPitch: (pitch: number) => void
+  setVoicePreference: (lang: Language, voiceName?: string) => void
+  setEnglishUkVoice: (voiceName?: string) => void
   setShowWordList: (show: boolean) => void
   setShowDetailedExplanation: (show: boolean) => void
   setShowNuanceExplanation: (show: boolean) => void
   setOutputFormat: (format: OutputFormat) => void
   reset: () => void
-  // Helper getter for current provider's API key
   getApiKey: () => string
 }
 
 const defaultApiKeys: Record<LLMProvider, string> = {
-  groq: '',
-  gemini: '',
-  cerebras: '',
-  openai: '',
-  grok: '',
+  groq: '', gemini: '', cerebras: '', openai: '', grok: '',
 }
+
+const defaultRoutingSteps: RoutingStep[] = [
+  { provider: 'gemini', model: 'gemini-2.5-flash' },
+  { provider: 'groq', model: 'llama-3.3-70b-versatile' },
+  { provider: 'openai', model: 'gpt-4o' },
+  { provider: 'grok', model: 'grok-beta' },
+  { provider: 'cerebras', model: 'gpt-oss-120b' },
+]
 
 const defaultSettings: TranslationSettings = {
   sourceLanguage: 'japanese',
   targetLanguage: 'english',
-  provider: 'groq',
+  explanationLanguage: 'auto',
+  provider: 'gemini',
+  model: 'gemini-2.5-flash',
+  routingSteps: [...defaultRoutingSteps],
+  routingCount: 1,
   apiKeys: { ...defaultApiKeys },
   customEndpoint: undefined,
-  model: undefined,
   temperature: 0.7,
+  speechRate: 1.0,
+  speechPitch: 1.0,
+  voicePreferences: {
+    japanese: undefined,
+    english: undefined,
+    russian: undefined,
+    chinese: undefined,
+    korean: undefined,
+    spanish: undefined,
+  },
+  englishUkVoiceName: undefined,
   showWordList: true,
   showDetailedExplanation: true,
   showNuanceExplanation: true,
@@ -73,74 +110,8 @@ export function computeOutputFormat(
 }
 
 const safeStorage = createJSONStorage(() => {
-  if (typeof window === 'undefined') {
-    return {
-      getItem: () => null,
-      setItem: () => { },
-      removeItem: () => { },
-    }
-  }
-
-  const storage = window.localStorage
-  const MAX_SIZE = 5 * 1024 * 1024 // 5MB
-
-  return {
-    getItem: (name: string) => {
-      try {
-        const value = storage.getItem(name)
-        if (!value) return null
-
-        // Migration: convert old apiKey to apiKeys
-        try {
-          const parsed = JSON.parse(value)
-          if (parsed.state && typeof parsed.state.apiKey === 'string' && !parsed.state.apiKeys) {
-            // Old format detected, migrate to new format
-            const oldApiKey = parsed.state.apiKey
-            const provider = parsed.state.provider || 'groq'
-            parsed.state.apiKeys = { ...defaultApiKeys, [provider]: oldApiKey }
-            delete parsed.state.apiKey
-            const migratedValue = JSON.stringify(parsed)
-            storage.setItem(name, migratedValue)
-            return migratedValue
-          }
-        } catch {
-          // JSON parse failed, return original
-        }
-
-        return value
-      } catch (error) {
-        console.error('Error reading from localStorage:', error)
-        return null
-      }
-    },
-    setItem: (name: string, value: string) => {
-      try {
-        if (value.length > MAX_SIZE) {
-          console.warn('Data too large for localStorage')
-          return
-        }
-
-        storage.setItem(name, value)
-      } catch (error) {
-        console.error('Error writing to localStorage:', error)
-        if (error instanceof DOMException && error.name === 'QuotaExceededError') {
-          console.warn('Storage quota exceeded, clearing history')
-          try {
-            storage.removeItem(name)
-          } catch (e) {
-            console.error('Failed to clear history:', e)
-          }
-        }
-      }
-    },
-    removeItem: (name: string) => {
-      try {
-        storage.removeItem(name)
-      } catch (error) {
-        console.error('Error removing from localStorage:', error)
-      }
-    },
-  }
+  if (typeof window === 'undefined') return { getItem: () => null, setItem: () => {}, removeItem: () => {} }
+  return window.localStorage
 })
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -149,99 +120,49 @@ export const useSettingsStore = create<SettingsStore>()(
       ...defaultSettings,
       setSourceLanguage: (sourceLanguage) => set({ sourceLanguage }),
       setTargetLanguage: (targetLanguage) => set({ targetLanguage }),
-      setProvider: (provider) => set({ provider }),
-      setApiKey: (apiKey) =>
-        set((state) => ({
-          apiKeys: {
-            ...state.apiKeys,
-            [state.provider]: apiKey,
-          },
-        })),
+      setExplanationLanguage: (explanationLanguage) => set({ explanationLanguage }),
+      setProvider: (provider) => set((state) => {
+        const newSteps = [...state.routingSteps]
+        newSteps[0] = { ...newSteps[0], provider }
+        return { provider, routingSteps: newSteps }
+      }),
+      setModel: (model) => set((state) => {
+        const newSteps = [...state.routingSteps]
+        if (model) newSteps[0] = { ...newSteps[0], model }
+        return { model, routingSteps: newSteps }
+      }),
+      setRoutingCount: (routingCount) => set({ routingCount }),
+      setRoutingStep: (index, step) => set((state) => {
+        const newSteps = [...state.routingSteps]
+        newSteps[index] = { ...newSteps[index], ...step }
+        if (index === 0) return { routingSteps: newSteps, provider: newSteps[0].provider, model: newSteps[0].model }
+        return { routingSteps: newSteps }
+      }),
+      setApiKey: (apiKey) => set((state) => ({ apiKeys: { ...state.apiKeys, [state.provider]: apiKey } })),
+      setApiKeys: (apiKeys) => set(() => ({ apiKeys: { ...defaultApiKeys, ...apiKeys } })),
       setCustomEndpoint: (customEndpoint) => set({ customEndpoint }),
-      setModel: (model) => set({ model }),
       setTemperature: (temperature) => set({ temperature }),
-      setShowWordList: (showWordList) =>
-        set((state) => ({
-          showWordList,
-          outputFormat: computeOutputFormat(
-            showWordList,
-            state.showDetailedExplanation,
-            state.showNuanceExplanation
-          ),
-        })),
-      setShowDetailedExplanation: (showDetailedExplanation) =>
-        set((state) => ({
-          showDetailedExplanation,
-          outputFormat: computeOutputFormat(
-            state.showWordList,
-            showDetailedExplanation,
-            state.showNuanceExplanation
-          ),
-        })),
-      setShowNuanceExplanation: (showNuanceExplanation) =>
-        set((state) => ({
-          showNuanceExplanation,
-          outputFormat: computeOutputFormat(
-            state.showWordList,
-            state.showDetailedExplanation,
-            showNuanceExplanation
-          ),
-        })),
-      setOutputFormat: (outputFormat) =>
-        set(() => {
-          if (outputFormat === 'word') {
-            return {
-              outputFormat,
-              showWordList: true,
-              showDetailedExplanation: false,
-              showNuanceExplanation: false,
-            }
-          }
-          if (outputFormat === 'sentence') {
-            return {
-              outputFormat,
-              showWordList: false,
-              showDetailedExplanation: true,
-              showNuanceExplanation: false,
-            }
-          }
-          if (outputFormat === 'full') {
-            return {
-              outputFormat,
-              showWordList: true,
-              showDetailedExplanation: true,
-              showNuanceExplanation: true,
-            }
-          }
-          return { outputFormat }
-        }),
+      setSpeechRate: (speechRate) => set({ speechRate }),
+      setSpeechPitch: (speechPitch) => set({ speechPitch }),
+      setVoicePreference: (lang, voiceName) => set((state) => ({
+        voicePreferences: { ...state.voicePreferences, [lang]: voiceName }
+      })),
+      setEnglishUkVoice: (voiceName) => set({ englishUkVoiceName: voiceName }),
+      setShowWordList: (showWordList) => set((state) => ({ showWordList, outputFormat: computeOutputFormat(showWordList, state.showDetailedExplanation, state.showNuanceExplanation) })),
+      setShowDetailedExplanation: (showDetailedExplanation) => set((state) => ({ showDetailedExplanation, outputFormat: computeOutputFormat(state.showWordList, showDetailedExplanation, state.showNuanceExplanation) })),
+      setShowNuanceExplanation: (showNuanceExplanation) => set((state) => ({ showNuanceExplanation, outputFormat: computeOutputFormat(state.showWordList, state.showDetailedExplanation, showNuanceExplanation) })),
+      setOutputFormat: (outputFormat) => set((state) => {
+        if (outputFormat === 'word') return { outputFormat, showWordList: true, showDetailedExplanation: false, showNuanceExplanation: false }
+        if (outputFormat === 'sentence') return { outputFormat, showWordList: false, showDetailedExplanation: true, showNuanceExplanation: false }
+        if (outputFormat === 'full') return { outputFormat, showWordList: true, showDetailedExplanation: true, showNuanceExplanation: true }
+        return { outputFormat }
+      }),
       reset: () => set(defaultSettings),
-      getApiKey: () => {
-        const state = get()
-        return state.apiKeys[state.provider] || ''
-      },
+      getApiKey: () => get().apiKeys[get().provider] || '',
     }),
     {
       name: 'translation-settings',
       storage: safeStorage,
-      partialize: (state) => ({
-        sourceLanguage: state.sourceLanguage,
-        targetLanguage: state.targetLanguage,
-        provider: state.provider,
-        apiKeys: state.apiKeys,
-        customEndpoint: state.customEndpoint,
-        model: state.model,
-        temperature: state.temperature,
-        showWordList: state.showWordList,
-        showDetailedExplanation: state.showDetailedExplanation,
-        showNuanceExplanation: state.showNuanceExplanation,
-        outputFormat: state.outputFormat,
-      }),
     }
   )
 )
-
-// Convenience function for getting API key from settings object
-export function getApiKeyForProvider(settings: TranslationSettings): string {
-  return settings.apiKeys[settings.provider] || ''
-}

@@ -2,18 +2,55 @@ import { LLMProvider } from '@/store/settingsStore'
 
 export interface LLMResponse {
   translation: string
-  words?: Array<{
+  words?: Array<{ 
+    original: string
+    translated: string
+    meaning?: string
+  }> 
+  detailedExplanation?: {
+    structure_diagram?: string
+    key_points?: Array<{ 
+      point: string, 
+      segment: string, // Exact phrase being explained
+      explanation: string 
+    }>
+    politeness_level?: string
+  }
+  nuanceExplanation?: {
+    tone?: string
+    cultural_context?: string
+    better_choices?: Array<{ 
+      phrase: string, 
+      original_segment: string, // The current phrase being improved
+      reason: string 
+    }>
+  }
+}
+
+export interface LLMAnalysis {
+  words?: Array<{ 
     original: string
     translated: string
     meaning?: string
   }>
-  detailedExplanation?: string
-  nuanceExplanation?: string
-}
-
-export interface LLMMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
+  detailedExplanation?: {
+    structure_diagram?: string
+    key_points?: Array<{ 
+      point: string, 
+      segment: string, 
+      explanation: string 
+    }>
+    politeness_level?: string
+  }
+  nuanceExplanation?: {
+    tone?: string
+    cultural_context?: string
+    better_choices?: Array<{ 
+      phrase: string, 
+      original_segment: string, 
+      reason: string 
+    }>
+  }
 }
 
 export interface LLMConfig {
@@ -23,7 +60,7 @@ export interface LLMConfig {
   temperature?: number
 }
 
-const API_TIMEOUT = 30000
+const API_TIMEOUT = 60000 // Extended timeout for analysis
 
 const DEFAULT_HEADERS = {
   'Content-Type': 'application/json',
@@ -42,19 +79,24 @@ function formatLanguageLabel(language: string): string {
   return LANGUAGE_LABELS[language] ?? language
 }
 
-// Fallback models for rate limit handling (in priority order)
-// These providers support automatic routing when rate limited
-const FALLBACK_MODELS: Record<string, string[]> = {
-  // Gemini: try different flash variants
-  gemini: ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3-flash-preview'],
-  // Groq: try different models
-  groq: ['llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b'],
-  // Cerebras: try different models
-  cerebras: ['gpt-oss-120b', 'zai-glm-4.7'],
+function extractJsonObject(text: string): string | null {
+  const startIndex = text.indexOf('{')
+  const lastIndex = text.lastIndexOf('}')
+  if (startIndex === -1 || lastIndex === -1) return null
+  return text.slice(startIndex, lastIndex + 1)
 }
 
-const MAX_RATE_LIMIT_RETRIES = 2
-const RATE_LIMIT_RETRY_DELAY = 1000 // 1 second base delay
+export class LLMError extends Error {
+  status?: number
+  provider: string
+
+  constructor(message: string, provider: string, status?: number) {
+    super(message)
+    this.name = 'LLMError'
+    this.provider = provider
+    this.status = status
+  }
+}
 
 export class LLMProviderBase {
   protected config: LLMConfig
@@ -63,6 +105,42 @@ export class LLMProviderBase {
     this.config = config
   }
 
+  // Phase 1: Pure Translation
+  async translateText(
+    text: string,
+    sourceLanguage: string,
+    targetLanguage: string,
+    signal?: AbortSignal
+  ): Promise<string> {
+    throw new Error('Method not implemented.')
+  }
+
+  // Phase 2: Deep Analysis (Granular)
+  async analyzeSpecific(
+    sourceText: string,
+    translatedText: string,
+    sourceLanguage: string,
+    targetLanguage: string,
+    explanationLanguage: string,
+    type: 'vocabulary' | 'grammar' | 'nuance',
+    signal?: AbortSignal
+  ): Promise<LLMAnalysis> {
+    throw new Error('Method not implemented.')
+  }
+
+  // Phase 2: Deep Analysis (Full) - For compatibility
+  async analyzeTranslation(
+    sourceText: string,
+    translatedText: string,
+    sourceLanguage: string,
+    targetLanguage: string,
+    explanationLanguage: string,
+    signal?: AbortSignal
+  ): Promise<LLMAnalysis> {
+    throw new Error('Method not implemented.')
+  }
+
+  // Legacy compatibility wrapper
   async translate(
     text: string,
     sourceLanguage: string,
@@ -72,57 +150,91 @@ export class LLMProviderBase {
     showNuanceExplanation: boolean,
     signal?: AbortSignal
   ): Promise<LLMResponse> {
-    throw new Error('Method not implemented')
+    const translation = await this.translateText(text, sourceLanguage, targetLanguage, signal)
+    return { translation }
   }
 
-  protected generateSystemPrompt(
+  protected generateTranslationPrompt(
+    sourceLanguage: string,
+    targetLanguage: string
+  ): string {
+    const from = formatLanguageLabel(sourceLanguage)
+    const to = formatLanguageLabel(targetLanguage)
+    return `You are an expert professional translator. Translate the user's text from ${from} to ${to}.
+    
+Rules:
+1. Preserve the original tone, style, and formatting (line breaks).
+2. Do not add any introductory or concluding remarks. Output ONLY the translation.
+3. Ensure natural, native-level phrasing in ${to}.`
+  }
+
+  protected generateSpecificAnalysisPrompt(
     sourceLanguage: string,
     targetLanguage: string,
-    showWordList: boolean,
-    showDetailedExplanation: boolean,
-    showNuanceExplanation: boolean
+    explanationLanguage: string,
+    type: 'vocabulary' | 'grammar' | 'nuance'
   ): string {
-    const fromLabel = formatLanguageLabel(sourceLanguage)
-    const toLabel = formatLanguageLabel(targetLanguage)
-    let prompt = `You are a professional translator. Translate the following text from ${fromLabel} to ${toLabel}.`
+    const from = formatLanguageLabel(sourceLanguage)
+    const to = formatLanguageLabel(targetLanguage)
+    const explanationLang = formatLanguageLabel(explanationLanguage)
+    
+    let instruction = ''
+    let jsonStructure = ''
 
-    if (showWordList || showDetailedExplanation || showNuanceExplanation) {
-      const parts: string[] = [
-        '"translation": "the translated text"',
-      ]
-
-      if (showWordList) {
-        parts.push(
-          `"words": [
-    {
-      "original": "original word",
-      "translated": "translated word",
-      "meaning": "brief meaning of the word (optional)"
+    if (type === 'vocabulary') {
+      instruction = `Extract 10-20 key lexical items (nouns, verbs in base form, adjectives, or fixed idioms) strictly from the source text.
+      Rules for 'words' array:
+      - 'original': The exact word or idiom from the source text. Do NOT include surrounding context, particles, or punctuation.
+      - 'translated': The most accurate direct translation of the 'original' word into ${to}. 
+      - 'meaning': A brief explanation in ${explanationLang} of how this word is being used in this specific context.
+      Ensure the list is clean and contains no duplicates or full phrases.`
+      
+      jsonStructure = `"words": [ { "original": "isolated_source_word", "translated": "direct_translation", "meaning": "contextual explanation in ${explanationLang}" } ]`
+    } else if (type === 'grammar') {
+      instruction = `Provide an essential linguistic and syntactic analysis of the text.
+      1. 'structure_diagram': A clear syntactic map showing how the source sentence is logically constructed (e.g., S-V-O mapping or head-initial/final structure).
+      2. 'key_points': Analyze actual grammatical rules. Quote the **${from} (Source Text)** in 'segment'. Explain its linguistic role (e.g., tense, case marking, clause subordination, or part-of-speech function) and how that logic is mapped into ${explanationLang}. Do not explain your translation choices; explain the grammar of the languages.
+      3. 'politeness_level': Define the specific socio-linguistic register (e.g., honorary, humble, peer-to-peer, professional).
+      Provide all explanations in ${explanationLang}.`
+      
+      jsonStructure = `"detailedExplanation": {
+        "structure_diagram": "logical syntax map",
+        "key_points": [ { "point": "grammatical concept", "segment": "quote from source", "explanation": "linguistic rule explanation in ${explanationLang}" } ],
+        "politeness_level": "register description in ${explanationLang}"
+      }`
+    } else if (type === 'nuance') {
+      instruction = `Perform a high-fidelity contextual and emotional decoding.
+      1. 'tone': Identify the specific emotional frequency and speaker's intent within the context of the situation described in the text.
+      2. 'cultural_context': Decode the setting and situational norms of the **SOURCE text**. Focus on the world of the original author.
+      3. 'better_choices': Suggest 1-2 refinements that better capture the original's 'soul'. Quote the 'original_segment' and explain the precise atmospheric difference in 'reason'.
+      Provide all explanations in ${explanationLang}.`
+      
+      jsonStructure = `"nuanceExplanation": {
+        "tone": "contextual intent analysis in ${explanationLang}",
+        "cultural_context": "situational decoding based on source setting in ${explanationLang}",
+        "better_choices": [ { "phrase": "refined alternative", "original_segment": "part of current result", "reason": "why this fits the specific situation better in ${explanationLang}" } ]
+      }`
     }
-  ]`
-        )
-      }
 
-      if (showDetailedExplanation) {
-        parts.push('"detailedExplanation": "detailed explanation of the translation choices, grammar notes, and cultural context"')
-      }
+    return `You are a linguistic expert. Analyze the translation from ${from} to ${to}.
+    
+Task: ${instruction}
 
-      if (showNuanceExplanation) {
-        parts.push('"nuanceExplanation": "explanation of subtle meanings, tone, and connotations in both languages"')
-      }
-
-      prompt += ' Provide the response in JSON format with the following structure. Return only valid JSON with no extra commentary:'
-      prompt += `
+Provide the output in strict JSON format:
 {
-  ${parts.join(',\n  ')}
-}`
-    }
+  ${jsonStructure}
+}
 
-    return prompt
+Return ONLY valid JSON.`
   }
 
-  protected createAbortController(): AbortController {
-    return new AbortController()
+  protected generateAnalysisPrompt(
+    sourceLanguage: string,
+    targetLanguage: string
+  ): string {
+    const from = formatLanguageLabel(sourceLanguage)
+    const to = formatLanguageLabel(targetLanguage)
+    return `Analyze the translation from ${from} to ${to}. Provide words, detailedExplanation, and nuanceExplanation in JSON.`
   }
 
   protected async fetchWithTimeout(
@@ -131,7 +243,7 @@ export class LLMProviderBase {
     timeout: number = API_TIMEOUT,
     externalSignal?: AbortSignal
   ): Promise<Response> {
-    const controller = this.createAbortController()
+    const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), timeout)
     const handleAbort = () => controller.abort()
 
@@ -144,10 +256,12 @@ export class LLMProviderBase {
     }
 
     try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-      })
+      const response = await fetch(url,
+        {
+          ...options,
+          signal: controller.signal,
+        }
+      )
       clearTimeout(timeoutId)
       if (externalSignal) {
         externalSignal.removeEventListener('abort', handleAbort)
@@ -158,529 +272,235 @@ export class LLMProviderBase {
       if (externalSignal) {
         externalSignal.removeEventListener('abort', handleAbort)
       }
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        if (externalSignal?.aborted) {
-          throw error
-        }
-        throw new Error('Request timeout. Please try again.')
-      }
       throw error
     }
   }
 
-  protected parseResponse(
-    content: string
-  ): LLMResponse {
+  protected parseAnalysisResponse(content: string): LLMAnalysis {
     try {
-      // Remove markdown code blocks if present (```json ... ``` or ``` ... ```)
-      let cleanedContent = content.trim()
-      if (cleanedContent.startsWith('```')) {
-        // Remove opening ```json or ```
-        cleanedContent = cleanedContent.replace(/^```(?:json)?\s*\n?/, '')
-        // Remove closing ```
-        cleanedContent = cleanedContent.replace(/\n?```\s*$/, '')
-        cleanedContent = cleanedContent.trim()
+      let cleaned = content.trim()
+      if (cleaned.startsWith('```')) {
+        cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?```\s*$/, '')
       }
-
-      const parsed = JSON.parse(cleanedContent)
-
-      if (!parsed.translation) {
-        console.warn('Parsed response missing translation field:', parsed)
-        return { translation: content }
+      return JSON.parse(cleaned)
+    } catch (e) {
+      const extracted = extractJsonObject(content)
+      if (extracted) {
+        try { return JSON.parse(extracted) } catch { }
       }
-
-      return parsed
-    } catch (error) {
-      console.warn('Failed to parse JSON response:', error, 'Raw content:', content)
-      if (!content) {
-        throw new Error('Empty response received from API')
-      }
-      return { translation: content }
+      return {}
     }
   }
 
-  protected async handleAPIError(
-    response: Response,
-    providerName: string
-  ): Promise<never> {
-    let errorMessage = `${providerName} API error`
-    let errorDetails = ''
-
-    // Try to get error details from response body
-    try {
-      const errorBody = await response.json()
-      errorDetails = JSON.stringify(errorBody)
-      console.error(`${providerName} API Error Response:`, errorBody)
-    } catch {
-      try {
-        errorDetails = await response.text()
-        console.error(`${providerName} API Error Text:`, errorDetails)
-      } catch {
-        // Ignore if we can't read the body
-      }
-    }
-
-    if (response.status === 401) {
-      errorMessage = 'Invalid API key. Please check your settings.'
-    } else if (response.status === 429) {
-      errorMessage = 'Rate limit exceeded. Please try again later.'
-    } else if (response.status === 400) {
-      errorMessage = `${providerName} Bad Request: ${errorDetails || response.statusText}`
-    } else if (response.status >= 500) {
-      errorMessage = 'Server error. Please try again later.'
-    } else {
-      errorMessage = `${providerName} API error: ${response.status} ${response.statusText}${errorDetails ? ' - ' + errorDetails : ''}`
-    }
-
-    throw new Error(errorMessage)
-  }
-
-  protected async getResponseBody(response: Response): Promise<any> {
-    try {
-      return await response.json()
-    } catch {
-      const text = await response.text()
-      console.error('Failed to parse response as JSON:', text)
-      throw new Error('Invalid response format')
-    }
+  protected async handleAPIError(response: Response, providerName: string): Promise<never> {
+    let details = ''
+    try { details = await response.text() } catch { }
+    const message = `${providerName} API Error: ${response.status} ${response.statusText} - ${details}`
+    throw new LLMError(message, providerName, response.status)
   }
 }
 
 export function createLLMProvider(provider: LLMProvider, config: LLMConfig): LLMProviderBase {
   switch (provider) {
-    case 'groq':
-      return new GroqProvider(config)
-    case 'gemini':
-      return new GeminiProvider(config)
-    case 'cerebras':
-      return new CerebrasProvider(config)
-    case 'openai':
-      return new OpenAIProvider(config)
-    case 'grok':
-      return new GrokProvider(config)
-    default:
-      throw new Error(`Unsupported provider: ${provider}`)
+    case 'groq': return new GroqProvider(config)
+    case 'gemini': return new GeminiProvider(config)
+    case 'cerebras': return new CerebrasProvider(config)
+    case 'openai': return new OpenAIProvider(config)
+    case 'grok': return new GrokProvider(config)
+    default: throw new Error(`Unsupported provider: ${provider}`)
   }
 }
 
 class GroqProvider extends LLMProviderBase {
-  async translate(
-    text: string,
-    sourceLanguage: string,
-    targetLanguage: string,
-    showWordList: boolean,
-    showDetailedExplanation: boolean,
-    showNuanceExplanation: boolean,
-    signal?: AbortSignal
-  ): Promise<LLMResponse> {
-    const endpoint = this.config.customEndpoint || 'https://api.groq.com/openai/v1/chat/completions'
-    const requestedModel = this.config.model || 'llama-3.3-70b-versatile'
+  private endpoint = 'https://api.groq.com/openai/v1/chat/completions'
 
-    const systemPrompt = this.generateSystemPrompt(
-      sourceLanguage,
-      targetLanguage,
-      showWordList,
-      showDetailedExplanation,
-      showNuanceExplanation
-    )
+  async translateText(text: string, source: string, target: string, signal?: AbortSignal): Promise<string> {
+    const model = this.config.model || 'llama-3.3-70b-versatile'
+    const prompt = this.generateTranslationPrompt(source, target)
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content: text }], false, signal)
+    return res.choices?.[0]?.message?.content || ''
+  }
 
-    // Build model fallback list for rate limiting
-    const fallbackModels = FALLBACK_MODELS.groq.filter(m => m !== requestedModel)
-    const modelsToTry = [requestedModel, ...fallbackModels]
+  async analyzeSpecific(sourceText: string, translatedText: string, source: string, target: string, explanationLanguage: string, type: 'vocabulary' | 'grammar' | 'nuance', signal?: AbortSignal): Promise<LLMAnalysis> {
+    const model = this.config.model || 'llama-3.3-70b-versatile'
+    const prompt = this.generateSpecificAnalysisPrompt(source, target, explanationLanguage, type)
+    const content = `Source:\n${sourceText}\n\nTranslation:\n${translatedText}`
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content }], true, signal)
+    return this.parseAnalysisResponse(res.choices?.[0]?.message?.content || '{}')
+  }
 
-    let lastError: Error | null = null
+  async analyzeTranslation(sourceText: string, translatedText: string, source: string, target: string, explanationLanguage: string, signal?: AbortSignal): Promise<LLMAnalysis> {
+    const model = this.config.model || 'llama-3.3-70b-versatile'
+    const prompt = this.generateAnalysisPrompt(source, target)
+    const content = `Source:\n${sourceText}\n\nTranslation:\n${translatedText}`
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content }], true, signal)
+    return this.parseAnalysisResponse(res.choices?.[0]?.message?.content || '{}')
+  }
 
-    for (let i = 0; i < modelsToTry.length && i <= MAX_RATE_LIMIT_RETRIES; i++) {
-      const model = modelsToTry[i]
-
-      try {
-        const response = await this.fetchWithTimeout(
-          endpoint,
-          {
-            method: 'POST',
-            headers: {
-              ...DEFAULT_HEADERS,
-              'Authorization': `Bearer ${this.config.apiKey}`,
-            },
-            body: JSON.stringify({
-              model,
-              messages: [
-                {
-                  role: 'system',
-                  content: systemPrompt,
-                },
-                {
-                  role: 'user',
-                  content: text,
-                },
-              ],
-              temperature: this.config.temperature ?? 0.7,
-              response_format: showWordList || showDetailedExplanation || showNuanceExplanation ? { type: 'json_object' } : undefined,
-            }),
-          },
-          API_TIMEOUT,
-          signal
-        )
-
-        if (response.status === 429 && i < modelsToTry.length - 1) {
-          // Rate limited, try next model after a short delay
-          console.warn(`Groq rate limited on ${model}, trying fallback...`)
-          await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_RETRY_DELAY * (i + 1)))
-          continue
-        }
-
-        if (!response.ok) {
-          await this.handleAPIError(response, 'Groq')
-        }
-
-        const data = await this.getResponseBody(response)
-        const content = data.choices?.[0]?.message?.content || ''
-
-        if (!content) {
-          throw new Error('No content received from API')
-        }
-
-        return this.parseResponse(content)
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error))
-        if (i >= modelsToTry.length - 1 || i >= MAX_RATE_LIMIT_RETRIES) {
-          throw lastError
-        }
-      }
-    }
-
-    throw lastError || new Error('All Groq models failed')
+  private async callApi(model: string, messages: any[], jsonMode: boolean, signal?: AbortSignal) {
+    const url = this.config.customEndpoint || this.endpoint
+    const res = await this.fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { ...DEFAULT_HEADERS, 'Authorization': `Bearer ${this.config.apiKey}` },
+      body: JSON.stringify({
+        model, messages, temperature: this.config.temperature ?? 0.3,
+        response_format: jsonMode ? { type: 'json_object' } : undefined
+      })
+    }, API_TIMEOUT, signal)
+    if (!res.ok) await this.handleAPIError(res, 'Groq')
+    return await res.json()
   }
 }
 
 class GeminiProvider extends LLMProviderBase {
-  async translate(
-    text: string,
-    sourceLanguage: string,
-    targetLanguage: string,
-    showWordList: boolean,
-    showDetailedExplanation: boolean,
-    showNuanceExplanation: boolean,
-    signal?: AbortSignal
-  ): Promise<LLMResponse> {
-    const requestedModel = this.config.model || 'gemini-2.5-flash'
+  async translateText(text: string, source: string, target: string, signal?: AbortSignal): Promise<string> {
+    const model = this.config.model || 'gemini-2.5-flash'
+    const systemPrompt = this.generateTranslationPrompt(source, target)
+    return await this.callGemini(model, systemPrompt, text, false, signal)
+  }
 
-    const systemPrompt = this.generateSystemPrompt(
-      sourceLanguage,
-      targetLanguage,
-      showWordList,
-      showDetailedExplanation,
-      showNuanceExplanation
-    )
+  async analyzeSpecific(sourceText: string, translatedText: string, source: string, target: string, explanationLanguage: string, type: 'vocabulary' | 'grammar' | 'nuance', signal?: AbortSignal): Promise<LLMAnalysis> {
+    const model = this.config.model || 'gemini-2.5-flash'
+    const systemPrompt = this.generateSpecificAnalysisPrompt(source, target, explanationLanguage, type)
+    const content = `Source:\n${sourceText}\n\nTarget:\n${translatedText}`
+    const result = await this.callGemini(model, systemPrompt, content, true, signal)
+    return this.parseAnalysisResponse(result)
+  }
 
-    // Build model fallback list for rate limiting
-    const fallbackModels = FALLBACK_MODELS.gemini.filter(m => m !== requestedModel)
-    const modelsToTry = [requestedModel, ...fallbackModels]
+  async analyzeTranslation(sourceText: string, translatedText: string, source: string, target: string, explanationLanguage: string, signal?: AbortSignal): Promise<LLMAnalysis> {
+    const model = this.config.model || 'gemini-2.5-flash'
+    const systemPrompt = this.generateAnalysisPrompt(source, target)
+    const content = `Source:\n${sourceText}\n\nTarget:\n${translatedText}`
+    const result = await this.callGemini(model, systemPrompt, content, true, signal)
+    return this.parseAnalysisResponse(result)
+  }
 
-    let lastError: Error | null = null
-
-    for (let i = 0; i < modelsToTry.length && i <= MAX_RATE_LIMIT_RETRIES; i++) {
-      const model = modelsToTry[i]
-      const endpoint = this.config.customEndpoint || `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
-
-      const body: Record<string, any> = {
-        contents: [
-          {
-            parts: [
-              {
-                text,
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: this.config.temperature ?? 0.7,
-          responseMimeType: showWordList || showDetailedExplanation || showNuanceExplanation ? 'application/json' : 'text/plain',
-        },
-      }
-
-      // Gemini REST API requires system_instruction in object format with parts array
-      if (systemPrompt) {
-        body.system_instruction = {
-          parts: [
-            {
-              text: systemPrompt,
-            },
-          ],
-        }
-      }
-
-      const url = new URL(endpoint)
-      url.searchParams.set('key', this.config.apiKey)
-
-      try {
-        console.log(`[Gemini] Sending request to: ${url.toString().replace(this.config.apiKey, 'API_KEY_HIDDEN')}`)
-        console.log(`[Gemini] Model: ${model}, Body:`, JSON.stringify(body, null, 2).substring(0, 500))
-
-        const response = await this.fetchWithTimeout(
-          url.toString(),
-          {
-            method: 'POST',
-            headers: DEFAULT_HEADERS,
-            body: JSON.stringify(body),
-          },
-          API_TIMEOUT,
-          signal
-        )
-
-        console.log(`[Gemini] Response status: ${response.status}`)
-
-        if (response.status === 429 && i < modelsToTry.length - 1) {
-          // Rate limited, try next model after a short delay
-          console.warn(`Gemini rate limited on ${model}, trying fallback...`)
-          await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_RETRY_DELAY * (i + 1)))
-          continue
-        }
-
-        if (!response.ok) {
-          await this.handleAPIError(response, 'Gemini')
-        }
-
-        const data = await this.getResponseBody(response)
-        console.log(`[Gemini] Response data:`, JSON.stringify(data).substring(0, 500))
-        const content = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
-
-        if (!content) {
-          throw new Error('No content received from API')
-        }
-
-        console.log(`[Gemini] Content length: ${content.length}`)
-        return this.parseResponse(content)
-      } catch (error) {
-        console.error(`[Gemini] Error in try block:`, error)
-        lastError = error instanceof Error ? error : new Error(String(error))
-        if (i >= modelsToTry.length - 1 || i >= MAX_RATE_LIMIT_RETRIES) {
-          throw lastError
-        }
+  private async callGemini(model: string, systemPrompt: string, userText: string, jsonMode: boolean, signal?: AbortSignal) {
+    const endpoint = this.config.customEndpoint || `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`
+    const url = new URL(endpoint)
+    url.searchParams.set('key', this.config.apiKey)
+    const body = {
+      contents: [{ parts: [{ text: userText }] }],
+      system_instruction: { parts: [{ text: systemPrompt }] },
+      generationConfig: {
+        temperature: this.config.temperature ?? 0.3,
+        responseMimeType: jsonMode ? 'application/json' : 'text/plain'
       }
     }
-
-    throw lastError || new Error('All Gemini models failed')
+    const res = await this.fetchWithTimeout(url.toString(), {
+      method: 'POST', headers: DEFAULT_HEADERS, body: JSON.stringify(body)
+    }, API_TIMEOUT, signal)
+    if (!res.ok) await this.handleAPIError(res, 'Gemini')
+    const data = await res.json()
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || ''
   }
 }
 
 class CerebrasProvider extends LLMProviderBase {
-  async translate(
-    text: string,
-    sourceLanguage: string,
-    targetLanguage: string,
-    showWordList: boolean,
-    showDetailedExplanation: boolean,
-    showNuanceExplanation: boolean,
-    signal?: AbortSignal
-  ): Promise<LLMResponse> {
-    const endpoint = this.config.customEndpoint || 'https://api.cerebras.ai/v1/chat/completions'
-    const requestedModel = this.config.model || 'gpt-oss-120b'
-
-    const systemPrompt = this.generateSystemPrompt(
-      sourceLanguage,
-      targetLanguage,
-      showWordList,
-      showDetailedExplanation,
-      showNuanceExplanation
-    )
-
-    // Build model fallback list for rate limiting
-    const fallbackModels = FALLBACK_MODELS.cerebras.filter(m => m !== requestedModel)
-    const modelsToTry = [requestedModel, ...fallbackModels]
-
-    let lastError: Error | null = null
-
-    for (let i = 0; i < modelsToTry.length && i <= MAX_RATE_LIMIT_RETRIES; i++) {
-      const model = modelsToTry[i]
-
-      try {
-        console.log(`[Cerebras] Sending request to: ${endpoint}`)
-        console.log(`[Cerebras] Model: ${model}`)
-
-        const response = await this.fetchWithTimeout(
-          endpoint,
-          {
-            method: 'POST',
-            headers: {
-              ...DEFAULT_HEADERS,
-              'Authorization': `Bearer ${this.config.apiKey}`,
-            },
-            body: JSON.stringify({
-              model,
-              messages: [
-                {
-                  role: 'system',
-                  content: systemPrompt,
-                },
-                {
-                  role: 'user',
-                  content: text,
-                },
-              ],
-              temperature: this.config.temperature ?? 0.7,
-            }),
-          },
-          API_TIMEOUT,
-          signal
-        )
-
-        console.log(`[Cerebras] Response status: ${response.status}`)
-
-        if (response.status === 429 && i < modelsToTry.length - 1) {
-          // Rate limited, try next model after a short delay
-          console.warn(`Cerebras rate limited on ${model}, trying fallback...`)
-          await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_RETRY_DELAY * (i + 1)))
-          continue
-        }
-
-        if (!response.ok) {
-          await this.handleAPIError(response, 'Cerebras')
-        }
-
-        const data = await this.getResponseBody(response)
-        const content = data.choices?.[0]?.message?.content || ''
-
-        if (!content) {
-          throw new Error('No content received from API')
-        }
-
-        return this.parseResponse(content)
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error))
-        if (i >= modelsToTry.length - 1 || i >= MAX_RATE_LIMIT_RETRIES) {
-          throw lastError
-        }
-      }
-    }
-
-    throw lastError || new Error('All Cerebras models failed')
+  private endpoint = 'https://api.cerebras.ai/v1/chat/completions'
+  async translateText(text: string, source: string, target: string, signal?: AbortSignal): Promise<string> {
+    const model = this.config.model || 'gpt-oss-120b'
+    const prompt = this.generateTranslationPrompt(source, target)
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content: text }], false, signal)
+    return res.choices?.[0]?.message?.content || ''
+  }
+  async analyzeSpecific(sourceText: string, translatedText: string, source: string, target: string, explanationLanguage: string, type: 'vocabulary' | 'grammar' | 'nuance', signal?: AbortSignal): Promise<LLMAnalysis> {
+    const model = this.config.model || 'gpt-oss-120b'
+    const prompt = this.generateSpecificAnalysisPrompt(source, target, explanationLanguage, type)
+    const content = `Source:\n${sourceText}\n\nTarget:\n${translatedText}`
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content }], true, signal)
+    return this.parseAnalysisResponse(res.choices?.[0]?.message?.content || '{}')
+  }
+  async analyzeTranslation(sourceText: string, translatedText: string, source: string, target: string, explanationLanguage: string, signal?: AbortSignal): Promise<LLMAnalysis> {
+    const model = this.config.model || 'gpt-oss-120b'
+    const prompt = this.generateAnalysisPrompt(source, target)
+    const content = `Source:\n${sourceText}\n\nTarget:\n${translatedText}`
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content }], true, signal)
+    return this.parseAnalysisResponse(res.choices?.[0]?.message?.content || '{}')
+  }
+  private async callApi(model: string, messages: any[], jsonMode: boolean, signal?: AbortSignal) {
+    const url = this.config.customEndpoint || this.endpoint
+    const res = await this.fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { ...DEFAULT_HEADERS, 'Authorization': `Bearer ${this.config.apiKey}` },
+      body: JSON.stringify({
+        model, messages, temperature: this.config.temperature ?? 0.3,
+        response_format: jsonMode ? { type: 'json_object' } : undefined
+      })
+    }, API_TIMEOUT, signal)
+    if (!res.ok) await this.handleAPIError(res, 'Cerebras')
+    return await res.json()
   }
 }
 
 class OpenAIProvider extends LLMProviderBase {
-  async translate(
-    text: string,
-    sourceLanguage: string,
-    targetLanguage: string,
-    showWordList: boolean,
-    showDetailedExplanation: boolean,
-    showNuanceExplanation: boolean,
-    signal?: AbortSignal
-  ): Promise<LLMResponse> {
-    const endpoint = this.config.customEndpoint || 'https://api.openai.com/v1/chat/completions'
-    const model = this.config.model || 'gpt-5.2'
-
-    const systemPrompt = this.generateSystemPrompt(
-      sourceLanguage,
-      targetLanguage,
-      showWordList,
-      showDetailedExplanation,
-      showNuanceExplanation
-    )
-
-    const response = await this.fetchWithTimeout(
-      endpoint,
-      {
-        method: 'POST',
-        headers: {
-          ...DEFAULT_HEADERS,
-          'Authorization': `Bearer ${this.config.apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: 'system',
-              content: systemPrompt,
-            },
-            {
-              role: 'user',
-              content: text,
-            },
-          ],
-          temperature: this.config.temperature ?? 0.7,
-          response_format: showWordList || showDetailedExplanation || showNuanceExplanation ? { type: 'json_object' } : undefined,
-        }),
-      },
-      API_TIMEOUT,
-      signal
-    )
-
-    if (!response.ok) {
-      await this.handleAPIError(response, 'OpenAI')
-    }
-
-    const data = await this.getResponseBody(response)
-    const content = data.choices?.[0]?.message?.content || ''
-
-    if (!content) {
-      throw new Error('No content received from API')
-    }
-
-    return this.parseResponse(content)
+  private endpoint = 'https://api.openai.com/v1/chat/completions'
+  async translateText(text: string, source: string, target: string, signal?: AbortSignal): Promise<string> {
+    const model = this.config.model || 'gpt-4o'
+    const prompt = this.generateTranslationPrompt(source, target)
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content: text }], false, signal)
+    return res.choices?.[0]?.message?.content || ''
+  }
+  async analyzeSpecific(sourceText: string, translatedText: string, source: string, target: string, explanationLanguage: string, type: 'vocabulary' | 'grammar' | 'nuance', signal?: AbortSignal): Promise<LLMAnalysis> {
+    const model = this.config.model || 'gpt-4o'
+    const prompt = this.generateSpecificAnalysisPrompt(source, target, explanationLanguage, type)
+    const content = `Source:\n${sourceText}\n\nTarget:\n${translatedText}`
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content }], true, signal)
+    return this.parseAnalysisResponse(res.choices?.[0]?.message?.content || '{}')
+  }
+  async analyzeTranslation(sourceText: string, translatedText: string, source: string, target: string, explanationLanguage: string, signal?: AbortSignal): Promise<LLMAnalysis> {
+    const model = this.config.model || 'gpt-4o'
+    const prompt = this.generateAnalysisPrompt(source, target)
+    const content = `Source:\n${sourceText}\n\nTarget:\n${translatedText}`
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content }], true, signal)
+    return this.parseAnalysisResponse(res.choices?.[0]?.message?.content || '{}')
+  }
+  private async callApi(model: string, messages: any[], jsonMode: boolean, signal?: AbortSignal) {
+    const url = this.config.customEndpoint || this.endpoint
+    const res = await this.fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { ...DEFAULT_HEADERS, 'Authorization': `Bearer ${this.config.apiKey}` },
+      body: JSON.stringify({
+        model, messages, temperature: this.config.temperature ?? 0.3,
+        response_format: jsonMode ? { type: 'json_object' } : undefined
+      })
+    }, API_TIMEOUT, signal)
+    if (!res.ok) await this.handleAPIError(res, 'OpenAI')
+    return await res.json()
   }
 }
 
 class GrokProvider extends LLMProviderBase {
-  async translate(
-    text: string,
-    sourceLanguage: string,
-    targetLanguage: string,
-    showWordList: boolean,
-    showDetailedExplanation: boolean,
-    showNuanceExplanation: boolean,
-    signal?: AbortSignal
-  ): Promise<LLMResponse> {
-    const endpoint = this.config.customEndpoint || 'https://api.x.ai/v1/chat/completions'
-    const model = this.config.model || 'grok-4-1-fast'
-
-    const systemPrompt = this.generateSystemPrompt(
-      sourceLanguage,
-      targetLanguage,
-      showWordList,
-      showDetailedExplanation,
-      showNuanceExplanation
-    )
-
-    const response = await this.fetchWithTimeout(
-      endpoint,
-      {
-        method: 'POST',
-        headers: {
-          ...DEFAULT_HEADERS,
-          'Authorization': `Bearer ${this.config.apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: 'system',
-              content: systemPrompt,
-            },
-            {
-              role: 'user',
-              content: text,
-            },
-          ],
-          temperature: this.config.temperature ?? 0.7,
-        }),
-      },
-      API_TIMEOUT,
-      signal
-    )
-
-    if (!response.ok) {
-      await this.handleAPIError(response, 'Grok')
-    }
-
-    const data = await this.getResponseBody(response)
-    const content = data.choices?.[0]?.message?.content || ''
-
-    if (!content) {
-      throw new Error('No content received from API')
-    }
-
-    return this.parseResponse(content)
+  private endpoint = 'https://api.x.ai/v1/chat/completions'
+  async translateText(text: string, source: string, target: string, signal?: AbortSignal): Promise<string> {
+    const model = this.config.model || 'grok-beta'
+    const prompt = this.generateTranslationPrompt(source, target)
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content: text }], false, signal)
+    return res.choices?.[0]?.message?.content || ''
+  }
+  async analyzeSpecific(sourceText: string, translatedText: string, source: string, target: string, explanationLanguage: string, type: 'vocabulary' | 'grammar' | 'nuance', signal?: AbortSignal): Promise<LLMAnalysis> {
+    const model = this.config.model || 'grok-beta'
+    const prompt = this.generateSpecificAnalysisPrompt(source, target, explanationLanguage, type)
+    const content = `Source:\n${sourceText}\n\nTarget:\n${translatedText}`
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content }], true, signal)
+    return this.parseAnalysisResponse(res.choices?.[0]?.message?.content || '{}')
+  }
+  async analyzeTranslation(sourceText: string, translatedText: string, source: string, target: string, explanationLanguage: string, signal?: AbortSignal): Promise<LLMAnalysis> {
+    const model = this.config.model || 'grok-beta'
+    const prompt = this.generateAnalysisPrompt(source, target)
+    const content = `Source:\n${sourceText}\n\nTarget:\n${translatedText}`
+    const res = await this.callApi(model, [{ role: 'system', content: prompt }, { role: 'user', content }], true, signal)
+    return this.parseAnalysisResponse(res.choices?.[0]?.message?.content || '{}')
+  }
+  private async callApi(model: string, messages: any[], jsonMode: boolean, signal?: AbortSignal) {
+    const url = this.config.customEndpoint || this.endpoint
+    const body: any = { model, messages, temperature: this.config.temperature ?? 0.3 }
+    if (jsonMode) body.response_format = { type: 'json_object' }
+    const res = await this.fetchWithTimeout(url, {
+      method: 'POST', headers: { ...DEFAULT_HEADERS, 'Authorization': `Bearer ${this.config.apiKey}` },
+      body: JSON.stringify(body)
+    }, API_TIMEOUT, signal)
+    if (!res.ok) await this.handleAPIError(res, 'Grok')
+    return await res.json()
   }
 }

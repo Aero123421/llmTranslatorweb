@@ -5,13 +5,13 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card } from '@/components/ui/card'
-import { Tabs, TabsContent, TabsTrigger } from '@/components/ui/tabs'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useSettingsStore, Language } from '@/store/settingsStore'
+import { useSettingsStore, LLMProvider, Language } from '@/store/settingsStore'
 import { useHistoryStore } from '@/store/historyStore'
-import { createLLMProvider } from '@/lib/llm/providers'
-import { Loader2, Sparkles, Copy, Check, ArrowRightLeft, Type, BookOpen, MessageSquare, ListMusic, Send, Globe2 } from 'lucide-react'
+import { createLLMProvider, LLMError, LLMProviderBase } from '@/lib/llm/providers'
+import { Loader2, Sparkles, Copy, Check, ArrowRightLeft, Type, BookOpen, MessageSquare, ListMusic, Send, Globe2, Clipboard, Trash2, X, Activity, ArrowDown, Volume2 } from 'lucide-react'
 import { LLMResponse } from '@/lib/llm/providers'
 import { toast } from 'sonner'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
@@ -27,8 +27,16 @@ const languages: { value: Language; label: string }[] = [
   { value: 'spanish', label: 'スペイン語' },
 ]
 
+const langMap: Record<string, string> = {
+  japanese: 'ja-JP',
+  english: 'en-US',
+  russian: 'ru-RU',
+  chinese: 'zh-CN',
+  korean: 'ko-KR',
+  spanish: 'es-ES',
+}
+
 export default function TranslationInterface() {
-  // Extended type to include the original text snapshot
   type TranslationResult = LLMResponse & { original: string }
 
   const [sourceText, setSourceText] = useState('')
@@ -40,6 +48,14 @@ export default function TranslationInterface() {
   const [localSourceLanguage, setLocalSourceLanguage] = useState<Language>('japanese')
   const [localTargetLanguage, setLocalTargetLanguage] = useState<Language>('english')
   const [mounted, setMounted] = useState(false)
+  const [isSubmitted, setIsSubmitted] = useState(false)
+  const [analyzingType, setAnalyzingType] = useState<'vocabulary' | 'grammar' | 'nuance' | null>(null)
+  const [activeProvider, setActiveProvider] = useState<LLMProvider | null>(null)
+  const [speakingText, setSpeakingText] = useState<string | null>(null)
+  const [activeVariant, setActiveVariant] = useState<string | null>(null)
+  const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null)
+  const [copiedField, setCopiedField] = useState<string | null>(null)
+
   const translationControllerRef = useRef<AbortController | null>(null)
   const isMountedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -47,23 +63,23 @@ export default function TranslationInterface() {
   const settings = useSettingsStore()
   const addHistoryItem = useHistoryStore((state) => state.addHistoryItem)
 
-  const isInitial = !targetText && !loading
-
   useEffect(() => {
+    isMountedRef.current = true
     setMounted(true)
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.getVoices()
+    }
     return () => {
       isMountedRef.current = false
-      if (translationControllerRef.current) {
-        translationControllerRef.current.abort()
-      }
+      if (translationControllerRef.current) translationControllerRef.current.abort()
+      if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel()
     }
   }, [])
 
-  // Auto-resize textarea
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = `${Math.min(200, Math.max(56, textareaRef.current.scrollHeight))}px`
+      textareaRef.current.style.height = `${Math.max(300, textareaRef.current.scrollHeight)}px`
     }
   }, [sourceText])
 
@@ -72,431 +88,402 @@ export default function TranslationInterface() {
     setLocalTargetLanguage(settings.targetLanguage)
   }, [settings.sourceLanguage, settings.targetLanguage])
 
-  const handleTranslate = async () => {
-    if (!sourceText.trim()) return
+  const handleCopy = (text: string, field: string) => {
+    if (!text) return
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedField(field || 'main')
+      toast.success('コピーしました')
+      setTimeout(() => setCopiedField(null), 2000)
+    })
+  }
 
-    const apiKey = settings.getApiKey()
-    if (!apiKey.trim()) {
-      toast.error('APIキーが設定されていません', {
-        description: '設定パネルからAPIキーを入力してください。',
-        action: {
-          label: '設定を開く',
-          onClick: () => {
-            const settingsBtn = document.querySelector('[data-nav="settings"]') as HTMLButtonElement
-            settingsBtn?.click()
-          }
-        }
-      })
+  const handleSpeak = (text: string, lang: Language, variant?: 'us' | 'uk') => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return
+
+    const key = variant ? `${text}-${variant}` : text
+
+    // CASE 1: Clicking the EXACT SAME button that is already playing -> STOP
+    if (window.speechSynthesis.speaking && speakingText === key) {
+      window.speechSynthesis.cancel()
+      setSpeakingText(null)
+      setActiveVariant(null)
       return
     }
 
-    if (loading) return
+    // CASE 2: Clicking a DIFFERENT button or starting fresh -> INTERRUPT & START
+    window.speechSynthesis.cancel() // Always cancel previous speech immediately
 
+    // Small delay to ensure the browser's speech engine has cleared the queue
+    setTimeout(() => {
+      const utterance = new SpeechSynthesisUtterance(text)
+      const langCode = langMap[lang] || lang
+      utterance.lang = langCode
+
+      const voices = window.speechSynthesis.getVoices()
+      let preferredVoiceName = settings.voicePreferences[lang]
+      if (lang === 'english' && variant === 'uk') {
+        preferredVoiceName = settings.englishUkVoiceName
+      }
+
+      const voice =
+        voices.find(v => v.name === preferredVoiceName) ||
+        voices.find(v => v.name.includes(variant === 'uk' ? 'Great Britain' : variant === 'us' ? 'United States' : '')) ||
+        voices.find(v => v.lang.startsWith(langCode.split('-')[0]))
+
+      if (voice) utterance.voice = voice
+      utterance.rate = settings.speechRate
+      utterance.pitch = settings.speechPitch
+
+      utterance.onstart = () => {
+        setSpeakingText(key)
+        setActiveVariant(variant || null)
+      }
+      utterance.onend = () => {
+        setSpeakingText(null)
+        setActiveVariant(null)
+      }
+      utterance.onerror = () => {
+        setSpeakingText(null)
+        setActiveVariant(null)
+      }
+
+      window.speechSynthesis.speak(utterance)
+    }, 10) // Minimal 10ms delay for robustness
+  }
+
+  const performRouting = async <T,>(
+    signal: AbortSignal,
+    action: (provider: LLMProviderBase) => Promise<T>
+  ): Promise<{ result: T, providerUsed: LLMProvider, modelUsed?: string }> => {
+    const stepsToTry = settings.routingSteps.slice(0, settings.routingCount)
+    let lastError: any
+
+    for (let i = 0; i < stepsToTry.length; i++) {
+      const step = stepsToTry[i]
+      const providerApiKey = settings.apiKeys[step.provider]
+      if (!providerApiKey) continue
+
+      setActiveProvider(step.provider)
+      const provider = createLLMProvider(step.provider, {
+        apiKey: providerApiKey,
+        model: step.model,
+        customEndpoint: step.provider === settings.provider ? settings.customEndpoint : undefined,
+        temperature: settings.temperature,
+      })
+
+      try {
+        const result = await action(provider)
+        return { result, providerUsed: step.provider, modelUsed: step.model }
+      } catch (error: any) {
+        lastError = error
+        const statusCode = error.status || (error instanceof LLMError ? error.status : null)
+        if ((statusCode === 429 || statusCode === 503) && i < stepsToTry.length - 1) {
+          toast.warning(`${step.provider} が混雑しています...`)
+          continue
+        }
+        throw error
+      }
+    }
+    throw lastError || new Error('有効なAPIキーが設定されていません。設定画面で追加してください。')
+  }
+
+  const handleTranslate = async () => {
+    if (!sourceText.trim() || loading) return
+    setIsSubmitted(true)
     setLoading(true)
     setResponse(null)
     setTargetText('')
-
-    if (translationControllerRef.current) {
-      translationControllerRef.current.abort()
-    }
-
+    if (translationControllerRef.current) translationControllerRef.current.abort()
     const controller = new AbortController()
     translationControllerRef.current = controller
 
     try {
-      const provider = createLLMProvider(settings.provider, {
-        apiKey,
-        model: settings.model,
-        customEndpoint: settings.customEndpoint,
-        temperature: settings.temperature,
-      })
-
-      const result = await provider.translate(
-        sourceText,
-        localSourceLanguage,
-        localTargetLanguage,
-        settings.showWordList,
-        settings.showDetailedExplanation,
-        settings.showNuanceExplanation,
-        controller.signal
+      const { result: translatedText, providerUsed, modelUsed } = await performRouting(controller.signal, (p) =>
+        p.translateText(sourceText, localSourceLanguage, localTargetLanguage, controller.signal)
       )
-
-      if (isMountedRef.current) {
-        setResponse({ ...result, original: sourceText })
-        setTargetText(result.translation)
-
-        addHistoryItem({
-          sourceText,
-          targetText: result.translation,
-          sourceLanguage: localSourceLanguage,
-          targetLanguage: localTargetLanguage,
-          words: result.words,
-          detailedExplanation: result.detailedExplanation,
-          nuanceExplanation: result.nuanceExplanation,
-          provider: settings.provider,
-          model: settings.model,
-        })
-      }
-    } catch (error) {
       if (!isMountedRef.current) return
-      if (error instanceof DOMException && error.name === 'AbortError') return
+      setTargetText(translatedText.trim())
+      setResponse({ translation: translatedText.trim(), original: sourceText })
+      setLoading(false)
 
-      console.error('翻訳エラー:', error)
-      const errorMessage = error instanceof Error ? error.message : '不明なエラー'
+      const historyId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+      setCurrentHistoryId(historyId)
 
-      if (errorMessage.includes('Rate limit')) {
-        toast.error('レートリミット超過', { description: 'APIのレートリミットに達しました。' })
-      } else if (errorMessage.includes('Invalid API key')) {
-        toast.error('APIキー無効', { description: 'APIキーが無効です。' })
-      } else {
-        toast.error('翻訳エラー', { description: errorMessage })
-      }
+      addHistoryItem({
+        id: historyId,
+        sourceText, targetText: translatedText.trim(),
+        sourceLanguage: localSourceLanguage, targetLanguage: localTargetLanguage,
+        provider: providerUsed, model: modelUsed,
+      } as any)
+    } catch (error) {
+      if (!isMountedRef.current || (error instanceof DOMException && error.name === 'AbortError')) return
+      toast.error('翻訳エラー', { description: error instanceof Error ? error.message : '不明' })
+      setLoading(false)
     } finally {
-      if (isMountedRef.current) {
-        setLoading(false)
-      }
-      translationControllerRef.current = null
+      setActiveProvider(null)
     }
   }
 
+  const handleGranularAnalyze = async (type: 'vocabulary' | 'grammar' | 'nuance') => {
+    if (!response?.translation || analyzingType) return
+    setAnalyzingType(type)
+    const controller = new AbortController()
+    translationControllerRef.current = controller
+    const preferredLang = settings.explanationLanguage === 'auto' ? localTargetLanguage : settings.explanationLanguage
+
+    try {
+      const { result: analysis } = await performRouting(controller.signal, (p) =>
+        p.analyzeSpecific(response.original, response.translation, localSourceLanguage, localTargetLanguage, preferredLang, type, controller.signal)
+      )
+      if (isMountedRef.current) {
+        setResponse(prev => prev ? ({ ...prev, ...analysis }) : null)
+        if (currentHistoryId) {
+          useHistoryStore.getState().updateHistoryItem(currentHistoryId, analysis)
+        }
+      }
+    } catch (error) {
+      console.warn(error)
+      toast.error('分析失敗')
+    } finally {
+      if (isMountedRef.current) setAnalyzingType(null)
+      setActiveProvider(null)
+    }
+  }
+
+  const handleClear = () => {
+    setSourceText('')
+    setTargetText('')
+    setResponse(null)
+    setIsSubmitted(false)
+  }
+
   const handleSwapLanguages = () => {
-    // Only swap languages, not text, because input text is now in the input bar
     const newSource = localTargetLanguage
     const newTarget = localSourceLanguage
-
     setLocalSourceLanguage(newSource)
     setLocalTargetLanguage(newTarget)
     settings.setSourceLanguage(newSource)
     settings.setTargetLanguage(newTarget)
-
-    // Clear previous results on swap to avoid confusion? Or keep them? 
-    // Keeping them is better UX sometimes, but language mismatch.
-    // Let's keep the text but clear the response detail as it might be invalid context.
-    // setResponse(null) // Optional: decided to keep for reference until new translation
   }
 
-  const handleCopy = (text: string, type: 'main' | 'word', wordId?: string) => {
-    if (!text) return
-    navigator.clipboard.writeText(text).then(() => {
-      if (type === 'main') {
-        setCopied(true)
-        setTimeout(() => setCopied(false), 2000)
-      } else {
-        setWordCopied(wordId || null)
-        setTimeout(() => setWordCopied(null), 2000)
-      }
-      toast.success('クリップボードにコピーしました', { duration: 1500 })
-    }).catch(err => {
-      console.error('Copy failed', err)
-      toast.error('コピーに失敗しました')
-    })
+  const SpeakerButtons = ({ text, lang, size = 'md' }: { text: string, lang: Language, size?: 'sm' | 'md' }) => {
+    const isEnglish = lang === 'english'
+    const baseClass = size === 'sm' ? 'h-7 px-2 text-[8px]' : 'h-8 px-3 text-[10px]'
+    const iconSize = size === 'sm' ? 'w-3 h-3' : 'w-3.5 h-3.5'
+
+    if (isEnglish) {
+      return (
+        <div className="flex items-center gap-1.5">
+          <Button variant="ghost" size="sm" className={`${baseClass} rounded-full font-black uppercase tracking-tighter transition-all ${speakingText === `${text}-us` ? 'bg-primary/20 text-primary animate-pulse' : 'bg-muted/20 text-muted-foreground hover:text-primary'}`} onClick={() => handleSpeak(text, lang, 'us')}>
+            <Volume2 className={`${iconSize} mr-1`} /> US
+          </Button>
+          <Button variant="ghost" size="sm" className={`${baseClass} rounded-full font-black uppercase tracking-tighter transition-all ${speakingText === `${text}-uk` ? 'bg-blue-500/20 text-blue-600 animate-pulse' : 'bg-muted/20 text-muted-foreground hover:text-blue-500'}`} onClick={() => handleSpeak(text, lang, 'uk')}>
+            <Volume2 className={`${iconSize} mr-1`} /> UK
+          </Button>
+        </div>
+      )
+    }
+
+    return (
+      <Button variant="ghost" size="icon" className={`${size === 'sm' ? 'h-7 w-7' : 'h-8 w-8'} rounded-full transition-all ${speakingText === text ? 'bg-primary/10 text-primary animate-pulse' : 'text-muted-foreground hover:text-primary bg-muted/20'}`} onClick={() => handleSpeak(text, lang)}>
+        <Volume2 className={iconSize} />
+      </Button>
+    )
   }
 
   if (!mounted) return null
 
   return (
-    <div className="flex flex-col h-full bg-background relative overflow-hidden">
-      {/* Main Content Area */}
-      <ScrollArea className="flex-1 w-full">
-        <div className="p-6 md:p-12 pb-48 w-full max-w-6xl mx-auto flex flex-col gap-8">
+    <div className="flex flex-col h-full bg-background relative overflow-hidden" aria-busy={loading}>
+      <ScrollArea className="flex-1 w-full min-h-0">
+        <div className="pt-2 px-4 pb-32 md:p-12 w-full max-w-[1600px] mx-auto flex flex-col gap-12">
 
-          {/* Header Controls - Simplified */}
-          <div className="flex items-center justify-between w-full">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] items-center gap-4 lg:gap-10">
             <div className="flex items-center gap-4">
-              <Badge variant="outline" className="px-4 py-1.5 bg-primary/5 text-primary border-primary/20 flex gap-2.5 rounded-full">
-                <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-                <span className="font-bold tracking-wider text-[10px] uppercase">Neural Bridge Active</span>
-              </Badge>
-              <div className="hidden lg:flex items-center gap-2.5 text-[10px] font-black text-muted-foreground/40 tracking-[0.2em] uppercase">
-                <Globe2 className="w-3.5 h-3.5" />
-                {settings.provider} <Separator orientation="vertical" className="h-3 mx-1 bg-border/40" /> {settings.model || 'AUTO'}
+              <Badge variant="outline" className="px-4 py-1.5 bg-primary/5 text-primary border-primary/20 rounded-full font-bold text-[10px] uppercase">翻訳中</Badge>
+            </div>
+            <div className="flex items-center justify-center">
+              <div className="flex items-center gap-1.5 p-2 rounded-2xl bg-muted/20 border border-border/40 shadow-inner backdrop-blur-sm scale-125 transition-transform">
+                <Select value={localSourceLanguage} onValueChange={(val: Language) => val === localTargetLanguage ? handleSwapLanguages() : setLocalSourceLanguage(val)}>
+                  <SelectTrigger className="h-10 rounded-xl border-none shadow-none font-black px-4 text-[11px] min-w-[110px] uppercase tracking-widest hover:bg-background/50 transition-colors"><SelectValue /></SelectTrigger>
+                  <SelectContent>{languages.map(l => <SelectItem key={l.value} value={l.value} className="text-xs font-bold">{l.label}</SelectItem>)}</SelectContent>
+                </Select>
+                <Button variant="ghost" size="icon" onClick={handleSwapLanguages} className="h-8 w-8 rounded-lg hover:text-primary transition-all active:scale-90"><ArrowRightLeft className="w-3.5 h-3.5" /></Button>
+                <Select value={localTargetLanguage} onValueChange={(val: Language) => val === localSourceLanguage ? handleSwapLanguages() : setLocalTargetLanguage(val)}>
+                  <SelectTrigger className="h-10 rounded-xl border-none shadow-none font-black px-4 text-[11px] min-w-[110px] text-primary uppercase tracking-widest hover:bg-background/50 transition-colors"><SelectValue /></SelectTrigger>
+                  <SelectContent>{languages.map(l => <SelectItem key={l.value} value={l.value} className="text-xs font-bold">{l.label}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="icon" className="h-10 w-10 rounded-xl bg-muted/20 hover:bg-destructive/10 hover:text-destructive transition-colors" onClick={handleClear} aria-label="Clear"><Trash2 className="w-4.5 h-4.5" /></Button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_80px_1fr] items-start gap-1 lg:gap-10">
+            <div className="space-y-4">
+              <div className="flex items-center justify-between px-4">
+                <div className="flex items-center gap-2 text-[10px] font-black tracking-[0.2em] uppercase text-muted-foreground/60"><Type className="w-3 h-3" /> 原文 (Source)</div>
+                {sourceText.trim() && <SpeakerButtons text={sourceText} lang={localSourceLanguage} />}
+              </div>
+              <div className="relative rounded-[2.5rem] border transition-all duration-500 bg-card border-primary/20 shadow-xl shadow-primary/5">
+                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => setSourceText(e.target.value)} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed min-h-[200px] md:min-h-[300px]" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
+                <div className="absolute bottom-6 right-8 md:bottom-8 md:right-10 text-[10px] font-black text-muted-foreground/20 uppercase tracking-widest">{sourceText.length} 文字</div>
+              </div>
+            </div>
+
+            {/* Middle Action Bridge */}
+            <div className="flex lg:flex-col items-center justify-center py-0 my-[-2rem] translate-y-12 lg:translate-y-0 lg:my-0 lg:py-0 h-full lg:min-h-[300px] z-10 relative pointer-events-none">
+              <div className="relative group pointer-events-auto">
+                {/* Decorative background glow */}
+                <div className={`absolute -inset-4 bg-gradient-to-tr from-primary/40 to-blue-400/40 rounded-full blur-2xl opacity-0 transition-all duration-1000 group-hover:opacity-100 ${sourceText.trim() && !loading ? 'opacity-50 animate-pulse' : ''}`} />
+
+                <Button
+                  size="lg"
+                  onClick={handleTranslate}
+                  disabled={!sourceText.trim() || loading}
+                  className={`relative rounded-full w-14 h-14 md:w-16 md:h-16 lg:w-24 lg:h-24 p-0 shadow-[0_10px_40px_-10px_rgba(0,0,0,0.3)] transition-all duration-500 hover:scale-110 active:scale-95 border-4 border-background/20 backdrop-blur-sm overflow-hidden ${sourceText.trim()
+                    ? 'bg-gradient-to-tr from-primary via-primary to-blue-400 text-primary-foreground shadow-primary/40'
+                    : 'bg-muted text-muted-foreground/40'
+                    }`}
+                >
+                  <AnimatePresence mode="wait">
+                    {loading ? (
+                      <motion.div key="loading" initial={{ opacity: 0, rotate: -180 }} animate={{ opacity: 1, rotate: 0 }} exit={{ opacity: 0, rotate: 180 }}>
+                        <Loader2 className="w-8 h-8 md:w-10 md:h-10 lg:w-12 lg:h-12 animate-spin" />
+                      </motion.div>
+                    ) : (
+                      <motion.div key="idle" initial={{ opacity: 0, scale: 0.5 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 1.5 }} className="relative">
+                        <Send className="w-6 h-6 md:w-8 md:h-8 lg:w-10 lg:h-10 translate-x-0.5" />
+                        {/* Shimmer effect overlay */}
+                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-[200%] animate-[shimmer_3s_infinite] group-hover:translate-x-[200%] transition-transform duration-1000" />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-4 pt-2 md:pt-0">
+              <div className="flex items-center justify-between px-4">
+                <div className="flex items-center gap-2 text-[10px] font-black tracking-[0.2em] uppercase text-primary/80"><Sparkles className="w-3 h-3" /> 翻訳結果 (Result)</div>
+                <div className="flex items-center gap-1">
+                  {targetText && <SpeakerButtons text={targetText} lang={localTargetLanguage} />}
+                  {targetText && <Button variant="ghost" size="sm" onClick={() => handleCopy(targetText, 'main')} className="h-8 px-4 rounded-full text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-primary bg-muted/20"><Copy className="w-3.5 h-3.5 mr-2" /> コピー</Button>}
+                </div>
+              </div>
+              <div className="relative p-8 md:p-10 rounded-[2.5rem] bg-card border border-primary/10 shadow-2xl min-h-[200px] md:min-h-[300px] flex items-start break-words whitespace-pre-wrap">
+                <p className="text-base md:text-lg font-black leading-loose text-foreground tracking-tight">{targetText || (loading ? '' : '...')}</p>
+                {loading && <div className="absolute inset-0 flex items-center justify-center bg-card/60 backdrop-blur-md rounded-[2.5rem] z-10"><div className="flex flex-col items-center gap-4 text-center"><div className="relative"><Loader2 className="w-14 h-14 animate-spin text-primary opacity-40" /><Activity className="absolute inset-0 m-auto w-6 h-6 text-primary animate-pulse" /></div>{activeProvider && <Badge variant="outline" className="bg-primary/5 text-primary border-primary/20 text-[9px] font-black px-4 py-1 rounded-full uppercase tracking-widest">Routing {activeProvider}</Badge>}</div></div>}
               </div>
             </div>
           </div>
 
-          {/* Results Area */}
-          <AnimatePresence mode="wait">
-            {isInitial ? null : (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="space-y-12"
-              >
-                {/* Split View */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-12">
-                  {/* Source Side */}
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 text-[10px] font-black tracking-[0.2em] uppercase text-muted-foreground/60 px-2">
-                      <Type className="w-3 h-3" /> Source Text
-                    </div>
-                    <div className="p-6 md:p-8 rounded-[2rem] bg-muted/10 border border-transparent hover:border-border/40 transition-colors">
-                      <p className="text-lg md:text-xl font-medium leading-relaxed whitespace-pre-wrap text-foreground/80">
-                        {response ? response.original : sourceText}
-                      </p>
-                    </div>
+          <AnimatePresence>
+            {isSubmitted && !loading && response && (settings.showWordList || settings.showDetailedExplanation || settings.showNuanceExplanation) && (
+              <motion.div initial={{ opacity: 0, y: 40 }} animate={{ opacity: 1, y: 0 }} className="pt-16 border-t border-border/20">
+                <Tabs defaultValue={settings.showWordList ? "words" : settings.showDetailedExplanation ? "grammar" : "nuance"} className="w-full">
+                  <div className="flex justify-center mb-12">
+                    <TabsList className="bg-muted/30 p-2 rounded-[2rem] inline-flex shadow-inner border border-border/40">
+                      {settings.showWordList && <TabsTrigger value="words" className="rounded-[1.5rem] px-12 py-4 font-black text-xs tracking-widest uppercase data-[state=active]:bg-card data-[state=active]:shadow-2xl transition-all">単語・熟語</TabsTrigger>}
+                      {settings.showDetailedExplanation && <TabsTrigger value="grammar" className="rounded-[1.5rem] px-12 py-4 font-black text-xs tracking-widest uppercase data-[state=active]:bg-card data-[state=active]:shadow-2xl">文法構造</TabsTrigger>}
+                      {settings.showNuanceExplanation && <TabsTrigger value="nuance" className="rounded-[1.5rem] px-12 py-4 font-black text-xs tracking-widest uppercase data-[state=active]:bg-card data-[state=active]:shadow-2xl">ニュアンス</TabsTrigger>}
+                    </TabsList>
                   </div>
 
-                  {/* Target Side */}
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between px-2">
-                      <div className="flex items-center gap-2 text-[10px] font-black tracking-[0.2em] uppercase text-primary">
-                        <Sparkles className="w-3 h-3" /> Translation
+                  <TabsContent value="words" className="outline-none">
+                    {analyzingType === 'vocabulary' ? (
+                      <div className="flex flex-col items-center justify-center py-24 space-y-6"><Loader2 className="w-12 h-12 animate-spin text-primary/30" /><p className="text-xs font-black tracking-[0.4em] uppercase text-muted-foreground/40 animate-pulse">{activeProvider} で抽出中...</p></div>
+                    ) : response.words ? (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {response.words.map((word, i) => (
+                          <motion.div key={i} initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: i * 0.05 }} className="p-6 bg-card border border-border/40 hover:border-primary/20 rounded-[2rem] shadow-sm hover:shadow-xl transition-all group relative overflow-hidden">
+                            <div className="absolute top-6 right-6"><button className="text-muted-foreground/40 hover:text-primary transition-colors" onClick={() => navigator.clipboard.writeText(word.translated).then(() => toast.success('コピーしました'))} aria-label="訳語をコピー"><Copy className="w-4 h-4" /></button></div>
+                            <div className="flex items-center gap-2.5 mb-1">
+                              <span className="font-serif text-2xl font-medium text-foreground">{word.original}</span>
+                              <SpeakerButtons text={word.original} lang={localSourceLanguage} size="sm" />
+                            </div>
+                            <div className="h-px w-8 bg-primary/30 my-4 rounded-full" />
+                            <div className="flex items-center gap-2 mb-2">
+                              <div className="text-lg font-black text-primary uppercase">{word.translated}</div>
+                              <SpeakerButtons text={word.translated} lang={localTargetLanguage} size="sm" />
+                            </div>
+                            <div className="text-sm text-muted-foreground font-medium leading-relaxed">{word.meaning}</div>
+                          </motion.div>
+                        ))}
                       </div>
-                      <div className="flex gap-2">
-                        <Button variant="ghost" size="sm" onClick={() => handleCopy(targetText, 'main')} className="h-6 px-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground hover:text-primary">
-                          {copied ? <Check className="w-3 h-3 mr-1" /> : <Copy className="w-3 h-3 mr-1" />} Copy
-                        </Button>
-                      </div>
-                    </div>
-                    <div
-                      className="relative p-6 md:p-8 rounded-[2rem] bg-card border border-primary/10 shadow-lg shadow-primary/5 min-h-[160px] flex items-start"
-                      aria-live="polite"
-                    >
-                      {loading ? (
-                        <div className="absolute inset-0 flex items-center justify-center bg-card/50 backdrop-blur-sm rounded-[2rem] z-10">
-                          <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                        </div>
-                      ) : null}
-                      <p className="text-xl md:text-2xl font-bold leading-relaxed whitespace-pre-wrap text-foreground">
-                        {targetText}
-                      </p>
-                    </div>
-                  </div>
-                </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-20 bg-muted/5 rounded-[3rem] border border-dashed border-border/60"><Button onClick={() => handleGranularAnalyze('vocabulary')} className="h-14 px-12 rounded-full font-black tracking-widest uppercase shadow-2xl">ボキャブラリーを抽出</Button></div>
+                    )}
+                  </TabsContent>
 
-                {/* Insights Section */}
-                {(response?.words || response?.detailedExplanation || response?.nuanceExplanation) && !loading && (
-                  <motion.div
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.2 }}
-                    className="pt-8 border-t border-border/20"
-                  >
-                    <Tabs defaultValue="words" className="w-full">
-                      <div className="flex items-center justify-center mb-10">
-                        <div className="bg-muted/30 p-1.5 rounded-2xl inline-flex shadow-inner">
-                          <TabsTrigger value="words" disabled={!response.words} className="rounded-xl px-8 py-2.5 font-black text-[10px] tracking-widest data-[state=active]:bg-card data-[state=active]:shadow-lg transition-all">TERMINOLOGY</TabsTrigger>
-                          <TabsTrigger value="grammar" disabled={!response.detailedExplanation} className="rounded-xl px-8 py-2.5 font-black text-[10px] tracking-widest data-[state=active]:bg-card data-[state=active]:shadow-lg transition-all">STRUCTURE</TabsTrigger>
-                          <TabsTrigger value="nuance" disabled={!response.nuanceExplanation} className="rounded-xl px-8 py-2.5 font-black text-[10px] tracking-widest data-[state=active]:bg-card data-[state=active]:shadow-lg transition-all">NUANCE</TabsTrigger>
+                  <TabsContent value="grammar" className="outline-none">
+                    {analyzingType === 'grammar' ? (
+                      <div className="flex flex-col items-center justify-center py-24 space-y-6"><Loader2 className="w-12 h-12 animate-spin text-primary/30" /><p className="text-xs font-black tracking-[0.4em] uppercase text-muted-foreground/40 animate-pulse">{activeProvider} で解析中...</p></div>
+                    ) : (response.detailedExplanation && typeof response.detailedExplanation !== 'string') ? (
+                      <div className="space-y-8">
+                        <div className="flex items-center justify-between px-4">
+                          <div className="flex items-center gap-3"><Activity className="w-4 h-4 text-primary opacity-60" /><h4 className="text-[10px] font-black uppercase text-primary/60 tracking-widest">文法・構文解析</h4></div>
+                          <Badge variant="outline" className="px-4 py-1 rounded-full font-black text-[10px] uppercase">{response.detailedExplanation.politeness_level}</Badge>
                         </div>
-                      </div>
-
-                      <TabsContent value="words" className="mt-0">
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                          {response.words?.map((word, i) => (
-                            <motion.div
-                              key={i}
-                              initial={{ opacity: 0, scale: 0.9 }}
-                              animate={{ opacity: 1, scale: 1 }}
-                              transition={{ delay: i * 0.05 }}
-                              className="p-6 bg-card border border-border/40 hover:border-primary/20 rounded-[2rem] shadow-sm hover:shadow-md transition-all group relative"
-                            >
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="absolute top-4 right-4 h-8 w-8 rounded-full opacity-0 group-hover:opacity-100 transition-all text-muted-foreground hover:text-primary hover:bg-primary/10"
-                                onClick={() => handleCopy(word.translated, 'word', word.original)}
-                                aria-label={`「${word.original}」をコピー`}
-                              >
-                                {wordCopied === word.original ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                              </Button>
-                              <div className="mb-3">
-                                <span className="font-serif text-2xl font-medium text-foreground">{word.original}</span>
-                              </div>
-                              <div className="h-px w-8 bg-primary/20 mb-3" />
-                              <div className="text-base font-bold text-primary mb-1">{word.translated}</div>
-                              <div className="text-xs text-muted-foreground font-medium leading-relaxed">{word.meaning}</div>
-                            </motion.div>
+                        <div className="grid grid-cols-1 gap-4">
+                          {response.detailedExplanation.key_points?.map((point, i) => (
+                            <div key={i} className="p-6 bg-card border border-border/40 rounded-[2rem] space-y-4 shadow-sm">
+                              <h5 className="font-black text-xl tracking-tight">{point.point}</h5>
+                              {point.segment && (
+                                <div className="flex items-center justify-start gap-3">
+                                  <div className="pl-6 border-l-2 border-primary/20 italic font-serif text-lg opacity-80">"{point.segment}"</div>
+                                  <SpeakerButtons text={point.segment} lang={localSourceLanguage} size="sm" />
+                                </div>
+                              )}
+                              <p className="text-base leading-relaxed font-medium opacity-70">{point.explanation}</p>
+                            </div>
                           ))}
                         </div>
-                      </TabsContent>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-20 bg-muted/5 rounded-[3rem] border border-dashed border-border/60"><Button onClick={() => handleGranularAnalyze('grammar')} className="h-14 px-12 rounded-full font-black tracking-widest uppercase shadow-2xl">文法構造を解析</Button></div>
+                    )}
+                  </TabsContent>
 
-                      <TabsContent value="grammar" className="mt-0">
-                        <Card className="p-8 md:p-12 bg-muted/10 border-border/20 rounded-[2.5rem]">
-                          <div className="prose prose-sm dark:prose-invert max-w-none font-medium text-foreground/80 leading-loose text-lg whitespace-pre-wrap">
-                            {response.detailedExplanation || ''}
+                  <TabsContent value="nuance" className="outline-none">
+                    {analyzingType === 'nuance' ? (
+                      <div className="flex flex-col items-center justify-center py-24 space-y-6"><Loader2 className="w-12 h-12 animate-spin text-primary/30" /><p className="text-xs font-black tracking-[0.4em] uppercase text-muted-foreground/40 animate-pulse">{activeProvider} で分析中...</p></div>
+                    ) : (response.nuanceExplanation && typeof response.nuanceExplanation !== 'string') ? (
+                      <div className="space-y-10">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <div className="p-8 rounded-[2.5rem] bg-amber-500/5 border border-amber-500/10 flex flex-col gap-4 shadow-sm">
+                            <div className="flex items-center gap-3"><MessageSquare className="w-5 h-5 text-amber-600 opacity-60" /><h4 className="text-[10px] font-black uppercase text-amber-600/60 tracking-widest">トーン・感情</h4></div>
+                            <p className="text-xl font-black text-amber-950 dark:text-amber-50 italic leading-tight">{response.nuanceExplanation.tone}</p>
                           </div>
-                        </Card>
-                      </TabsContent>
-
-                      <TabsContent value="nuance" className="mt-0">
-                        <div className="relative p-8 md:p-12 bg-amber-500/5 border border-amber-500/10 rounded-[2.5rem] overflow-hidden">
-                          <div className="absolute top-0 right-0 p-12 opacity-5">
-                            <MessageSquare className="w-48 h-48" />
-                          </div>
-                          <div className="relative z-10 prose prose-sm dark:prose-invert max-w-none font-medium text-foreground/80 leading-loose text-lg whitespace-pre-wrap">
-                            {response.nuanceExplanation || ''}
+                          <div className="p-8 rounded-[2.5rem] bg-indigo-500/5 border border-indigo-500/10 flex flex-col gap-4 shadow-sm">
+                            <div className="flex items-center gap-3"><Globe2 className="w-5 h-5 text-indigo-600 opacity-60" /><h4 className="text-[10px] font-black uppercase text-indigo-600/60 tracking-widest">文脈・背景</h4></div>
+                            <p className="text-base leading-relaxed opacity-80 font-medium">{response.nuanceExplanation.cultural_context}</p>
                           </div>
                         </div>
-                      </TabsContent>
-                    </Tabs>
-                  </motion.div>
-                )}
+                        <div className="grid grid-cols-1 gap-6">
+                          {response.nuanceExplanation.better_choices?.map((choice, i) => (
+                            <div key={i} className="p-8 bg-card border border-border/40 rounded-[3rem] shadow-sm">
+                              <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] items-center gap-10 mb-6">
+                                <div className="p-6 rounded-[2rem] bg-muted/20 border border-dashed border-border/60 opacity-50 line-through text-lg italic">{choice.original_segment}</div>
+                                <ArrowRightLeft className="w-6 h-6 text-primary opacity-40" />
+                                <div className="p-6 rounded-[2rem] bg-primary/5 border border-primary/30 text-primary font-black text-2xl">{choice.phrase}</div>
+                              </div>
+                              <div className="p-6 bg-muted/10 rounded-[1.5rem] italic text-base opacity-70 leading-relaxed">"{choice.reason}"</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center py-20 bg-muted/5 rounded-[4rem] border border-dashed border-border/60"><Button onClick={() => handleGranularAnalyze('nuance')} className="h-14 px-12 rounded-full font-black tracking-widest uppercase shadow-2xl">ニュアンスを深掘り</Button></div>
+                    )}
+                  </TabsContent>
+                </Tabs>
               </motion.div>
             )}
-
           </AnimatePresence>
         </div>
       </ScrollArea>
-
-      {/* Input Bar (Adaptive Position) */}
-      <motion.div
-        layout
-        className={
-          isInitial
-            ? "absolute inset-0 z-50 flex flex-col items-center justify-center bg-background/95 p-6"
-            : "absolute bottom-0 left-0 right-0 z-50 bg-background/60 backdrop-blur-xl border-t border-border/20 px-4 py-6 md:px-6 md:pb-10"
-        }
-        transition={{ type: "spring", bounce: 0, duration: 0.5 }}
-      >
-        <motion.div
-          layout
-          className={
-            isInitial
-              ? "w-full max-w-3xl relative"
-              : "w-full max-w-4xl mx-auto relative"
-          }
-        >
-          {/* Logo/Title for Initial State */}
-          {isInitial && (
-            <motion.div
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="absolute bottom-[130%] left-0 right-0 text-center space-y-4"
-            >
-              <div className="inline-flex items-center justify-center p-4 rounded-3xl bg-primary/10 mb-4 ring-1 ring-primary/20 shadow-lg shadow-primary/10">
-                <Sparkles className="w-12 h-12 text-primary" />
-              </div>
-              <h1 className="text-4xl md:text-5xl font-black tracking-tight text-foreground">
-                Neural Bridge
-              </h1>
-              <p className="text-muted-foreground font-medium text-lg">
-                Context-Aware AI Translation
-              </p>
-            </motion.div>
-          )}
-
-          <div className={`relative transition-all duration-300 rounded-[2rem] border overflow-hidden group ${loading ? 'opacity-80' :
-            isInitial
-              ? 'bg-background/5 border-primary/20 shadow-lg shadow-primary/5 hover:border-primary/40 hover:bg-background/10'
-              : 'bg-background/40 border-primary/10 hover:border-primary/20 hover:shadow-primary/5 focus-within:border-primary/30 focus-within:bg-background/60 focus-within:shadow-primary/10'
-            }`}>
-
-            <Textarea
-              ref={textareaRef}
-              value={sourceText}
-              onChange={(e) => setSourceText(e.target.value)}
-              placeholder={isInitial ? "Enter text seamlessly..." : "What would you like to translate?"}
-              aria-label="Source text"
-              disabled={loading}
-              className={`w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium placeholder:text-muted-foreground/30 transition-all duration-200 ease-out [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]
-                ${isInitial
-                  ? "min-h-[200px] max-h-[600px] py-6 pl-8 pr-20 text-lg md:text-xl leading-relaxed"
-                  : "min-h-[64px] max-h-[300px] py-5 pl-6 pr-20 text-base"
-                }`}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault()
-                  handleTranslate()
-                }
-              }}
-            />
-
-            <div className="absolute right-4 bottom-4">
-              <Button
-                size={isInitial ? "lg" : "icon"}
-                onClick={handleTranslate}
-                disabled={!sourceText.trim() || loading}
-                aria-label="翻訳する"
-                className={`rounded-full transition-all duration-300 shadow-md hover:scale-105 active:scale-95
-                  ${isInitial ? "h-12 w-12" : "h-10 w-10"}
-                  ${sourceText.trim() ? 'bg-primary text-primary-foreground shadow-primary/20' : 'bg-muted/50 text-muted-foreground/50'}`}
-              >
-                {loading ? <Loader2 className={`${isInitial ? "w-5 h-5" : "w-5 h-5"} animate-spin`} /> : <Send className={`${isInitial ? "w-5 h-5 ml-0.5" : "w-4 h-4 ml-0.5"}`} />}
-              </Button>
-            </div>
-          </div>
-
-          {/* Char Counter */}
-          <div className="absolute -bottom-8 left-8 flex items-center gap-4 text-[10px] font-bold text-muted-foreground/30 tracking-[0.2em] uppercase">
-            <span>{sourceText.length} CHARS</span>
-            <span className="w-1 h-1 rounded-full bg-current opacity-30" />
-            <span>ENTER TO SEND</span>
-          </div>
-
-          {/* Controls Bar (Languages + Quick Actions) */}
-          <motion.div
-            layout
-            className="absolute bottom-full mb-6 left-0 right-0 flex flex-col md:flex-row items-center justify-between gap-4 px-2"
-          >
-            {/* Language Selector */}
-            <div className="flex items-center gap-1.5 p-1 rounded-full bg-background/50 border border-border/40 backdrop-blur-md shadow-sm">
-              <Select value={localSourceLanguage} onValueChange={(val: Language) => {
-                if (val === localTargetLanguage) handleSwapLanguages()
-                else { setLocalSourceLanguage(val); settings.setSourceLanguage(val); }
-              }}>
-                <SelectTrigger aria-label="Source language" className="h-8 rounded-full border-none shadow-none font-bold bg-transparent hover:bg-foreground/5 focus:ring-0 transition-colors px-3 text-xs min-w-[100px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="rounded-xl border-primary/10 shadow-xl min-w-[120px]">
-                  <div className="p-1">{languages.map(l => <SelectItem key={l.value} value={l.value} className="rounded-lg text-xs font-medium cursor-pointer">{l.label}</SelectItem>)}</div>
-                </SelectContent>
-              </Select>
-
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={handleSwapLanguages}
-                className="h-7 w-7 rounded-full text-muted-foreground/70 hover:text-primary hover:bg-primary/10 transition-all hover:rotate-180"
-                aria-label="言語を入れ替える"
-              >
-                <ArrowRightLeft className="w-3 h-3" />
-              </Button>
-
-              <Select value={localTargetLanguage} onValueChange={(val: Language) => {
-                if (val === localSourceLanguage) handleSwapLanguages()
-                else { setLocalTargetLanguage(val); settings.setTargetLanguage(val); }
-              }}>
-                <SelectTrigger aria-label="Target language" className="h-8 rounded-full border-none shadow-none font-bold bg-transparent hover:bg-foreground/5 focus:ring-0 transition-colors px-3 text-xs min-w-[100px] text-primary">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="rounded-xl border-primary/10 shadow-xl min-w-[120px]">
-                  <div className="p-1">{languages.map(l => <SelectItem key={l.value} value={l.value} className="rounded-lg text-xs font-medium cursor-pointer">{l.label}</SelectItem>)}</div>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Quick Actions */}
-            <div className="flex gap-2">
-              <TooltipProvider>
-                {[
-                  { id: 'word', icon: ListMusic, active: settings.showWordList, label: 'Vocabulary', toggle: () => settings.setShowWordList(!settings.showWordList) },
-                  { id: 'grammar', icon: BookOpen, active: settings.showDetailedExplanation, label: 'Structure', toggle: () => settings.setShowDetailedExplanation(!settings.showDetailedExplanation) },
-                  { id: 'nuance', icon: MessageSquare, active: settings.showNuanceExplanation, label: 'Nuance', toggle: () => settings.setShowNuanceExplanation(!settings.showNuanceExplanation) },
-                ].map((tool) => (
-                  <Tooltip key={tool.id}>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className={`h-9 px-4 rounded-full transition-all border backdrop-blur-md ${tool.active ? 'bg-primary text-primary-foreground border-primary shadow-lg shadow-primary/20' : 'bg-background/50 border-border/40 text-muted-foreground hover:bg-background/80 hover:text-foreground hover:border-border/60'}`}
-                        onClick={tool.toggle}
-                        type="button"
-                        aria-pressed={tool.active}
-                      >
-                        <tool.icon className="w-3.5 h-3.5 mr-2" />
-                        <span className="text-[10px] font-black tracking-wider uppercase">{tool.label}</span>
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent className="text-[10px] font-black tracking-widest uppercase bg-foreground text-background mb-2">{tool.label} Mode</TooltipContent>
-                  </Tooltip>
-                ))}
-              </TooltipProvider>
-            </div>
-          </motion.div>
-        </motion.div>
-      </motion.div>
     </div>
   )
 }
