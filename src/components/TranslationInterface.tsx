@@ -88,23 +88,22 @@ export default function TranslationInterface() {
   }
 
   useLayoutEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = `${Math.max(300, textareaRef.current.scrollHeight)}px`
-    }
+    const textarea = textareaRef.current
+    if (!textarea) return
+
     const viewport = getScrollViewport()
-    if (viewport && scrollTopRef.current !== null) {
-      viewport.scrollTop = scrollTopRef.current
-      scrollTopRef.current = null
+    const currentScrollTop = viewport ? viewport.scrollTop : null
+
+    textarea.style.height = 'auto'
+    textarea.style.height = `${Math.max(300, textarea.scrollHeight)}px`
+
+    if (viewport && currentScrollTop !== null) {
+      viewport.scrollTop = currentScrollTop
     }
   }, [sourceText])
 
   useLayoutEffect(() => {
-    const viewport = getScrollViewport()
-    if (viewport && scrollTopRef.current !== null) {
-      viewport.scrollTop = scrollTopRef.current
-      scrollTopRef.current = null
-    }
+    // Keep internal consistency but remove auto-scroll logic that might be jarring
   }, [targetText, response])
 
   useEffect(() => {
@@ -213,7 +212,6 @@ export default function TranslationInterface() {
 
   const handleTranslate = async () => {
     if (!sourceText.trim() || loading) return
-    captureScrollPosition()
     setIsSubmitted(true)
     setLoading(true)
     setResponse(null)
@@ -227,7 +225,6 @@ export default function TranslationInterface() {
         p.translateText(sourceText, localSourceLanguage, localTargetLanguage, controller.signal)
       )
       if (!isMountedRef.current) return
-      captureScrollPosition()
       setTargetText(translatedText.trim())
       setResponse({ translation: translatedText.trim(), original: sourceText })
       setLoading(false)
@@ -252,7 +249,6 @@ export default function TranslationInterface() {
 
   const handleGranularAnalyze = async (type: 'vocabulary' | 'grammar' | 'nuance') => {
     if (!response?.translation || analyzingType) return
-    captureScrollPosition()
     setAnalyzingType(type)
     const controller = new AbortController()
     translationControllerRef.current = controller
@@ -278,7 +274,6 @@ export default function TranslationInterface() {
   }
 
   const handleClear = () => {
-    captureScrollPosition()
     setSourceText('')
     setTargetText('')
     setResponse(null)
@@ -348,20 +343,20 @@ export default function TranslationInterface() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_80px_1fr] items-start gap-1 lg:gap-10">
-            <div className="space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_80px_1fr] items-start gap-1 lg:gap-10 relative">
+            <div className="space-y-4 min-w-0">
               <div className="flex items-center justify-between px-4">
                 <div className="flex items-center gap-2 text-[10px] font-black tracking-[0.2em] uppercase text-muted-foreground/60"><Type className="w-3 h-3" /> 原文 (Source)</div>
                 {sourceText.trim() && <SpeakerButtons text={sourceText} lang={localSourceLanguage} />}
               </div>
               <div className="relative rounded-[2.5rem] border transition-all duration-500 bg-card border-primary/20 shadow-xl shadow-primary/5">
-                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => { captureScrollPosition(); setSourceText(e.target.value) }} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed min-h-[200px] md:min-h-[300px]" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
+                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => { setSourceText(e.target.value) }} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed min-h-[300px]" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
                 <div className="absolute bottom-6 right-8 md:bottom-8 md:right-10 text-[10px] font-black text-muted-foreground/20 uppercase tracking-widest">{sourceText.length} 文字</div>
               </div>
             </div>
 
             {/* Middle Action Bridge */}
-            <div className="flex lg:flex-col items-center justify-center py-0 my-[-2rem] translate-y-12 lg:translate-y-0 lg:my-0 lg:py-0 h-full lg:min-h-[300px] z-10 relative pointer-events-none">
+            <div className="flex lg:flex-col items-center justify-center py-0 my-[-2rem] translate-y-4 lg:translate-y-0 lg:my-0 lg:py-0 h-auto lg:sticky lg:top-56 z-10 pointer-events-none">
               <div className="relative group pointer-events-auto">
                 {/* Decorative background glow */}
                 <div className={`absolute -inset-4 bg-gradient-to-tr from-primary/40 to-blue-400/40 rounded-full blur-2xl opacity-0 transition-all duration-1000 group-hover:opacity-100 ${sourceText.trim() && !loading ? 'opacity-50 animate-pulse' : ''}`} />
@@ -392,7 +387,7 @@ export default function TranslationInterface() {
               </div>
             </div>
 
-            <div className="space-y-4 pt-2 md:pt-0">
+            <div className="space-y-4 pt-2 md:pt-0 min-w-0">
               <div className="flex items-center justify-between px-4">
                 <div className="flex items-center gap-2 text-[10px] font-black tracking-[0.2em] uppercase text-primary/80"><Sparkles className="w-3 h-3" /> 翻訳結果 (Result)</div>
                 <div className="flex items-center gap-1">
@@ -400,8 +395,8 @@ export default function TranslationInterface() {
                   {targetText && <Button variant="ghost" size="sm" onClick={() => handleCopy(targetText, 'main')} className="h-8 px-4 rounded-full text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-primary bg-muted/20"><Copy className="w-3.5 h-3.5 mr-2" /> コピー</Button>}
                 </div>
               </div>
-              <div className="relative p-8 md:p-10 rounded-[2.5rem] bg-card border border-primary/10 shadow-2xl min-h-[200px] md:min-h-[300px] flex items-start break-words whitespace-pre-wrap">
-                <p className="text-base md:text-lg font-black leading-loose text-foreground tracking-tight">{targetText || (loading ? '' : '...')}</p>
+              <div className="relative p-8 md:p-10 rounded-[2.5rem] bg-card border border-primary/10 shadow-2xl min-h-[300px] break-words whitespace-pre-wrap">
+                <p className="text-base md:text-lg font-black leading-loose text-foreground tracking-tight w-full max-w-full">{targetText || (loading ? '' : '...')}</p>
                 {loading && <div className="absolute inset-0 flex items-center justify-center bg-card/60 backdrop-blur-md rounded-[2.5rem] z-10"><div className="flex flex-col items-center gap-4 text-center"><div className="relative"><Loader2 className="w-14 h-14 animate-spin text-primary opacity-40" /><Activity className="absolute inset-0 m-auto w-6 h-6 text-primary animate-pulse" /></div>{activeProvider && <Badge variant="outline" className="bg-primary/5 text-primary border-primary/20 text-[9px] font-black px-4 py-1 rounded-full uppercase tracking-widest">Routing {activeProvider}</Badge>}</div></div>}
               </div>
             </div>
