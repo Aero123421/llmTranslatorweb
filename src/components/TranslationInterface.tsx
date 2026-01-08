@@ -248,7 +248,10 @@ export default function TranslationInterface() {
                         </Button>
                       </div>
                     </div>
-                    <div className="relative p-6 md:p-8 rounded-[2rem] bg-card border border-primary/10 shadow-lg shadow-primary/5 min-h-[160px] flex items-start">
+                    <div
+                      className="relative p-6 md:p-8 rounded-[2rem] bg-card border border-primary/10 shadow-lg shadow-primary/5 min-h-[160px] flex items-start"
+                      aria-live="polite"
+                    >
                       {loading ? (
                         <div className="absolute inset-0 flex items-center justify-center bg-card/50 backdrop-blur-sm rounded-[2rem] z-10">
                           <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -385,6 +388,7 @@ export default function TranslationInterface() {
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
               placeholder={isInitial ? "Enter text seamlessly..." : "What would you like to translate?"}
+              aria-label="Source text"
               disabled={loading}
               className={`w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium placeholder:text-muted-foreground/30 transition-all duration-200 ease-out [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]
                 ${isInitial
@@ -432,7 +436,7 @@ export default function TranslationInterface() {
                 if (val === localTargetLanguage) handleSwapLanguages()
                 else { setLocalSourceLanguage(val); settings.setSourceLanguage(val); }
               }}>
-                <SelectTrigger className="h-8 rounded-full border-none shadow-none font-bold bg-transparent hover:bg-foreground/5 focus:ring-0 transition-colors px-3 text-xs min-w-[100px]">
+                <SelectTrigger aria-label="Source language" className="h-8 rounded-full border-none shadow-none font-bold bg-transparent hover:bg-foreground/5 focus:ring-0 transition-colors px-3 text-xs min-w-[100px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="rounded-xl border-primary/10 shadow-xl min-w-[120px]">
@@ -454,7 +458,7 @@ export default function TranslationInterface() {
                 if (val === localSourceLanguage) handleSwapLanguages()
                 else { setLocalTargetLanguage(val); settings.setTargetLanguage(val); }
               }}>
-                <SelectTrigger className="h-8 rounded-full border-none shadow-none font-bold bg-transparent hover:bg-foreground/5 focus:ring-0 transition-colors px-3 text-xs min-w-[100px] text-primary">
+                <SelectTrigger aria-label="Target language" className="h-8 rounded-full border-none shadow-none font-bold bg-transparent hover:bg-foreground/5 focus:ring-0 transition-colors px-3 text-xs min-w-[100px] text-primary">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent className="rounded-xl border-primary/10 shadow-xl min-w-[120px]">
@@ -479,6 +483,7 @@ export default function TranslationInterface() {
                         className={`h-9 px-4 rounded-full transition-all border backdrop-blur-md ${tool.active ? 'bg-primary text-primary-foreground border-primary shadow-lg shadow-primary/20' : 'bg-background/50 border-border/40 text-muted-foreground hover:bg-background/80 hover:text-foreground hover:border-border/60'}`}
                         onClick={tool.toggle}
                         type="button"
+                        aria-pressed={tool.active}
                       >
                         <tool.icon className="w-3.5 h-3.5 mr-2" />
                         <span className="text-[10px] font-black tracking-wider uppercase">{tool.label}</span>
