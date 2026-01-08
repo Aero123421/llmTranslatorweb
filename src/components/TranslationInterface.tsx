@@ -59,7 +59,7 @@ export default function TranslationInterface() {
   const translationControllerRef = useRef<AbortController | null>(null)
   const isMountedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const panelHeightClass = "h-[50vh] md:h-[60vh] min-h-[320px] md:min-h-[420px]"
+  const panelHeightClass = "h-[65vh] md:h-[70vh] min-h-[380px] md:min-h-[520px]"
 
   const settings = useSettingsStore()
   const addHistoryItem = useHistoryStore((state) => state.addHistoryItem)
