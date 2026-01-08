@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -59,10 +59,6 @@ export default function TranslationInterface() {
   const translationControllerRef = useRef<AbortController | null>(null)
   const isMountedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const scrollAreaRef = useRef<HTMLDivElement | null>(null)
-  const rootRef = useRef<HTMLDivElement | null>(null)
-  const scrollTopRef = useRef<{ viewport: number | null; main: number | null; document: number | null } | null>(null)
-  const panelHeightClass = "min-h-[320px] md:min-h-[520px]"
 
   const settings = useSettingsStore()
   const addHistoryItem = useHistoryStore((state) => state.addHistoryItem)
@@ -80,43 +76,12 @@ export default function TranslationInterface() {
     }
   }, [])
 
-  const getScrollViewport = () => {
-    return scrollAreaRef.current?.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement | null
-  }
-
-  const getMainScrollContainer = () => {
-    return rootRef.current?.closest('main') as HTMLElement | null
-  }
-
-  const captureScrollPosition = () => {
-    const viewport = getScrollViewport()
-    const main = getMainScrollContainer()
-    const doc = typeof document !== 'undefined' ? document.scrollingElement : null
-    scrollTopRef.current = {
-      viewport: viewport ? viewport.scrollTop : null,
-      main: main ? main.scrollTop : null,
-      document: doc ? doc.scrollTop : null,
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+      textareaRef.current.style.height = `${Math.max(300, textareaRef.current.scrollHeight)}px`
     }
-  }
-
-  useLayoutEffect(() => {
-    const el = textareaRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.max(260, el.scrollHeight)}px`
   }, [sourceText])
-
-  useLayoutEffect(() => {
-    const saved = scrollTopRef.current
-    if (!saved) return
-    const viewport = getScrollViewport()
-    const main = getMainScrollContainer()
-    const doc = typeof document !== 'undefined' ? document.scrollingElement : null
-    if (viewport && saved.viewport !== null) viewport.scrollTop = saved.viewport
-    if (main && saved.main !== null) main.scrollTop = saved.main
-    if (doc && saved.document !== null) doc.scrollTop = saved.document
-    scrollTopRef.current = null
-  }, [sourceText, targetText, response])
 
   useEffect(() => {
     setLocalSourceLanguage(settings.sourceLanguage)
@@ -224,7 +189,6 @@ export default function TranslationInterface() {
 
   const handleTranslate = async () => {
     if (!sourceText.trim() || loading) return
-    captureScrollPosition()
     setIsSubmitted(true)
     setLoading(true)
     setResponse(null)
@@ -238,7 +202,6 @@ export default function TranslationInterface() {
         p.translateText(sourceText, localSourceLanguage, localTargetLanguage, controller.signal)
       )
       if (!isMountedRef.current) return
-      captureScrollPosition()
       setTargetText(translatedText.trim())
       setResponse({ translation: translatedText.trim(), original: sourceText })
       setLoading(false)
@@ -263,7 +226,6 @@ export default function TranslationInterface() {
 
   const handleGranularAnalyze = async (type: 'vocabulary' | 'grammar' | 'nuance') => {
     if (!response?.translation || analyzingType) return
-    captureScrollPosition()
     setAnalyzingType(type)
     const controller = new AbortController()
     translationControllerRef.current = controller
@@ -289,7 +251,6 @@ export default function TranslationInterface() {
   }
 
   const handleClear = () => {
-    captureScrollPosition()
     setSourceText('')
     setTargetText('')
     setResponse(null)
@@ -333,10 +294,9 @@ export default function TranslationInterface() {
   if (!mounted) return null
 
   return (
-    <div ref={rootRef} className="flex flex-col h-full bg-background relative overflow-hidden" aria-busy={loading}>
-      <div ref={scrollAreaRef} className="flex-1 w-full min-h-0">
-        <ScrollArea className="h-full">
-          <div className="pt-0 px-4 pb-24 md:p-12 w-full max-w-[1600px] mx-auto flex flex-col gap-6 md:gap-12">
+    <div className="flex flex-col h-full bg-background relative overflow-hidden" aria-busy={loading}>
+      <ScrollArea className="flex-1 w-full min-h-0">
+        <div className="pt-2 px-4 pb-32 md:p-12 w-full max-w-[1600px] mx-auto flex flex-col gap-12">
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] items-center gap-4 lg:gap-10">
             <div className="flex items-center gap-4">
@@ -366,14 +326,14 @@ export default function TranslationInterface() {
                 <div className="flex items-center gap-2 text-[10px] font-black tracking-[0.2em] uppercase text-muted-foreground/60"><Type className="w-3 h-3" /> 原文 (Source)</div>
                 {sourceText.trim() && <SpeakerButtons text={sourceText} lang={localSourceLanguage} />}
               </div>
-              <div className={`relative rounded-[2.5rem] border transition-all duration-500 bg-card border-primary/20 shadow-xl shadow-primary/5 ${panelHeightClass} mt-2 md:mt-0`}>
-                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => { captureScrollPosition(); setSourceText(e.target.value) }} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
+              <div className="relative rounded-[2.5rem] border transition-all duration-500 bg-card border-primary/20 shadow-xl shadow-primary/5">
+                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => setSourceText(e.target.value)} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed min-h-[200px] md:min-h-[300px]" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
                 <div className="absolute bottom-6 right-8 md:bottom-8 md:right-10 text-[10px] font-black text-muted-foreground/20 uppercase tracking-widest">{sourceText.length} 文字</div>
               </div>
             </div>
 
             {/* Middle Action Bridge */}
-            <div className="flex lg:flex-col items-center justify-center lg:items-start lg:justify-start py-0 my-[-2rem] translate-y-12 lg:translate-y-0 lg:my-0 lg:py-0 lg:pt-10 lg:h-auto lg:min-h-[300px] z-10 relative pointer-events-none lg:sticky lg:top-24">
+            <div className="flex lg:flex-col items-center justify-center py-0 my-[-2rem] translate-y-12 lg:translate-y-0 lg:my-0 lg:py-0 h-full lg:min-h-[300px] z-10 relative pointer-events-none">
               <div className="relative group pointer-events-auto">
                 {/* Decorative background glow */}
                 <div className={`absolute -inset-4 bg-gradient-to-tr from-primary/40 to-blue-400/40 rounded-full blur-2xl opacity-0 transition-all duration-1000 group-hover:opacity-100 ${sourceText.trim() && !loading ? 'opacity-50 animate-pulse' : ''}`} />
@@ -412,10 +372,8 @@ export default function TranslationInterface() {
                   {targetText && <Button variant="ghost" size="sm" onClick={() => handleCopy(targetText, 'main')} className="h-8 px-4 rounded-full text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-primary bg-muted/20"><Copy className="w-3.5 h-3.5 mr-2" /> コピー</Button>}
                 </div>
               </div>
-              <div className={`relative rounded-[2.5rem] bg-card border border-primary/10 shadow-2xl ${panelHeightClass}`}>
-                <div className="p-8 md:p-10 break-words whitespace-pre-wrap">
-                  <p className="text-base md:text-lg font-black leading-loose text-foreground tracking-tight">{targetText || (loading ? '' : '...')}</p>
-                </div>
+              <div className="relative p-8 md:p-10 rounded-[2.5rem] bg-card border border-primary/10 shadow-2xl min-h-[200px] md:min-h-[300px] flex items-start break-words whitespace-pre-wrap">
+                <p className="text-base md:text-lg font-black leading-loose text-foreground tracking-tight">{targetText || (loading ? '' : '...')}</p>
                 {loading && <div className="absolute inset-0 flex items-center justify-center bg-card/60 backdrop-blur-md rounded-[2.5rem] z-10"><div className="flex flex-col items-center gap-4 text-center"><div className="relative"><Loader2 className="w-14 h-14 animate-spin text-primary opacity-40" /><Activity className="absolute inset-0 m-auto w-6 h-6 text-primary animate-pulse" /></div>{activeProvider && <Badge variant="outline" className="bg-primary/5 text-primary border-primary/20 text-[9px] font-black px-4 py-1 rounded-full uppercase tracking-widest">Routing {activeProvider}</Badge>}</div></div>}
               </div>
             </div>
@@ -525,8 +483,7 @@ export default function TranslationInterface() {
             )}
           </AnimatePresence>
         </div>
-        </ScrollArea>
-      </div>
+      </ScrollArea>
     </div>
   )
 }
