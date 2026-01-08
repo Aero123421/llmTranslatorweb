@@ -59,7 +59,7 @@ export default function TranslationInterface() {
   const translationControllerRef = useRef<AbortController | null>(null)
   const isMountedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const panelHeightClass = "h-[50vh] min-h-[320px] md:h-[70vh] md:min-h-[520px]"
+  const panelHeightClass = "min-h-[320px] md:min-h-[520px]"
 
   const settings = useSettingsStore()
   const addHistoryItem = useHistoryStore((state) => state.addHistoryItem)
@@ -76,6 +76,16 @@ export default function TranslationInterface() {
       if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel()
     }
   }, [])
+
+  useEffect(() => {
+    const el = textareaRef.current
+    if (!el || typeof window === 'undefined') return
+
+    const prevScrollY = window.scrollY
+    el.style.height = 'auto'
+    el.style.height = `${Math.max(260, el.scrollHeight)}px`
+    window.scrollTo({ top: prevScrollY })
+  }, [sourceText])
 
   useEffect(() => {
     setLocalSourceLanguage(settings.sourceLanguage)
@@ -290,7 +300,7 @@ export default function TranslationInterface() {
   return (
     <div className="flex flex-col h-full bg-background relative overflow-hidden" aria-busy={loading}>
       <ScrollArea className="flex-1 w-full min-h-0">
-        <div className="pt-2 px-4 pb-32 md:p-12 w-full max-w-[1600px] mx-auto flex flex-col gap-12">
+        <div className="pt-0 px-4 pb-24 md:p-12 w-full max-w-[1600px] mx-auto flex flex-col gap-6 md:gap-12">
 
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto_1fr] items-center gap-4 lg:gap-10">
             <div className="flex items-center gap-4">
@@ -320,8 +330,8 @@ export default function TranslationInterface() {
                 <div className="flex items-center gap-2 text-[10px] font-black tracking-[0.2em] uppercase text-muted-foreground/60"><Type className="w-3 h-3" /> 原文 (Source)</div>
                 {sourceText.trim() && <SpeakerButtons text={sourceText} lang={localSourceLanguage} />}
               </div>
-              <div className={`relative rounded-[2.5rem] border transition-all duration-500 bg-card border-primary/20 shadow-xl shadow-primary/5 ${panelHeightClass} overflow-hidden`}>
-                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => setSourceText(e.target.value)} placeholder="翻訳したいテキストを入力してください..." className="w-full h-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed overflow-y-auto" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
+              <div className={`relative rounded-[2.5rem] border transition-all duration-500 bg-card border-primary/20 shadow-xl shadow-primary/5 ${panelHeightClass} mt-2 md:mt-0`}>
+                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => setSourceText(e.target.value)} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
                 <div className="absolute bottom-6 right-8 md:bottom-8 md:right-10 text-[10px] font-black text-muted-foreground/20 uppercase tracking-widest">{sourceText.length} 文字</div>
               </div>
             </div>
@@ -366,8 +376,8 @@ export default function TranslationInterface() {
                   {targetText && <Button variant="ghost" size="sm" onClick={() => handleCopy(targetText, 'main')} className="h-8 px-4 rounded-full text-[10px] font-black uppercase tracking-widest text-muted-foreground hover:text-primary bg-muted/20"><Copy className="w-3.5 h-3.5 mr-2" /> コピー</Button>}
                 </div>
               </div>
-              <div className={`relative rounded-[2.5rem] bg-card border border-primary/10 shadow-2xl ${panelHeightClass} overflow-hidden`}>
-                <div className="h-full w-full p-8 md:p-10 overflow-y-auto break-words whitespace-pre-wrap">
+              <div className={`relative rounded-[2.5rem] bg-card border border-primary/10 shadow-2xl ${panelHeightClass}`}>
+                <div className="p-8 md:p-10 break-words whitespace-pre-wrap">
                   <p className="text-base md:text-lg font-black leading-loose text-foreground tracking-tight">{targetText || (loading ? '' : '...')}</p>
                 </div>
                 {loading && <div className="absolute inset-0 flex items-center justify-center bg-card/60 backdrop-blur-md rounded-[2.5rem] z-10"><div className="flex flex-col items-center gap-4 text-center"><div className="relative"><Loader2 className="w-14 h-14 animate-spin text-primary opacity-40" /><Activity className="absolute inset-0 m-auto w-6 h-6 text-primary animate-pulse" /></div>{activeProvider && <Badge variant="outline" className="bg-primary/5 text-primary border-primary/20 text-[9px] font-black px-4 py-1 rounded-full uppercase tracking-widest">Routing {activeProvider}</Badge>}</div></div>}
