@@ -361,7 +361,7 @@ class GeminiProvider extends LLMProviderBase {
           {
             parts: [
               {
-                text: `${systemPrompt}\n\n${text}`,
+                text,
               },
             ],
           },
@@ -370,6 +370,17 @@ class GeminiProvider extends LLMProviderBase {
           temperature: this.config.temperature ?? 0.7,
           responseMimeType: showWordList || showDetailedExplanation || showNuanceExplanation ? 'application/json' : 'text/plain',
         },
+      }
+
+      // Add system instruction if available
+      if (systemPrompt) {
+        body.systemInstruction = {
+          parts: [
+            {
+              text: systemPrompt,
+            },
+          ],
+        }
       }
 
       const url = new URL(endpoint)
