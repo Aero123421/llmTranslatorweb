@@ -46,11 +46,11 @@ function formatLanguageLabel(language: string): string {
 // These providers support automatic routing when rate limited
 const FALLBACK_MODELS: Record<string, string[]> = {
   // Gemini: try different flash variants
-  gemini: ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3-flash-preview'],
-  // Groq: try different models
-  groq: ['llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b'],
+  gemini: ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro'],
+  // Groq: try different models (only valid Groq models)
+  groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'llama3-70b-8192'],
   // Cerebras: try different models
-  cerebras: ['gpt-oss-120b', 'zai-glm-4.7'],
+  cerebras: ['llama-3.3-70b', 'llama3.1-8b'],
 }
 
 const MAX_RATE_LIMIT_RETRIES = 2
@@ -336,7 +336,7 @@ class GeminiProvider extends LLMProviderBase {
     showNuanceExplanation: boolean,
     signal?: AbortSignal
   ): Promise<LLMResponse> {
-    const requestedModel = this.config.model || 'gemini-2.5-flash'
+    const requestedModel = this.config.model || 'gemini-2.0-flash-exp'
 
     const systemPrompt = this.generateSystemPrompt(
       sourceLanguage,
@@ -361,7 +361,7 @@ class GeminiProvider extends LLMProviderBase {
           {
             parts: [
               {
-                text,
+                text: `${systemPrompt}\n\n${text}`,
               },
             ],
           },
@@ -370,10 +370,6 @@ class GeminiProvider extends LLMProviderBase {
           temperature: this.config.temperature ?? 0.7,
           responseMimeType: showWordList || showDetailedExplanation || showNuanceExplanation ? 'application/json' : 'text/plain',
         },
-      }
-
-      if (systemPrompt) {
-        body.systemInstruction = systemPrompt
       }
 
       const url = new URL(endpoint)
@@ -433,7 +429,7 @@ class CerebrasProvider extends LLMProviderBase {
     signal?: AbortSignal
   ): Promise<LLMResponse> {
     const endpoint = this.config.customEndpoint || 'https://api.cerebras.ai/v1/chat/completions'
-    const requestedModel = this.config.model || 'gpt-oss-120b'
+    const requestedModel = this.config.model || 'llama-3.3-70b'
 
     const systemPrompt = this.generateSystemPrompt(
       sourceLanguage,
@@ -522,7 +518,7 @@ class OpenAIProvider extends LLMProviderBase {
     signal?: AbortSignal
   ): Promise<LLMResponse> {
     const endpoint = this.config.customEndpoint || 'https://api.openai.com/v1/chat/completions'
-    const model = this.config.model || 'gpt-5.2'
+    const model = this.config.model || 'gpt-4o-mini'
 
     const systemPrompt = this.generateSystemPrompt(
       sourceLanguage,
@@ -586,7 +582,7 @@ class GrokProvider extends LLMProviderBase {
     signal?: AbortSignal
   ): Promise<LLMResponse> {
     const endpoint = this.config.customEndpoint || 'https://api.x.ai/v1/chat/completions'
-    const model = this.config.model || 'grok-4-1-fast'
+    const model = this.config.model || 'grok-beta'
 
     const systemPrompt = this.generateSystemPrompt(
       sourceLanguage,

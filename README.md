@@ -64,19 +64,19 @@ This application uses client-side API calls, so you need to provide your own API
 **Supported Providers**:
 
 1. **Groq** - Get API key at [console.groq.com](https://console.groq.com/)
-   - Default models: `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `meta-llama/llama-4-scout-17b-16e-instruct`
+   - Default models: `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `llama3-70b-8192`
 
 2. **Google Gemini** - Get API key at [ai.google.dev](https://ai.google.dev/)
-   - Default models: `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-3-flash-preview`
+   - Default models: `gemini-2.0-flash-exp`, `gemini-1.5-flash`, `gemini-1.5-pro`
 
 3. **Cerebras** - Get API key at [inference.cerebras.ai](https://inference.cerebras.ai/)
-   - Default models: `llama-3.3-70b`, `llama3.1-8b`, `qwen-3-32b`, `gpt-oss-120b`
+   - Default models: `llama-3.3-70b`, `llama3.1-8b`
 
 4. **OpenAI** - Get API key at [platform.openai.com](https://platform.openai.com/)
-   - Default models: `gpt-4.1-mini`, `gpt-4o`, `gpt-4.1`
+   - Default models: `gpt-4o-mini`, `gpt-4o`, `gpt-4-turbo`
 
 5. **Grok (xAI)** - Get API key at [x.ai](https://x.ai/)
-   - Default models: `grok-4`, `grok-3`, `grok-3-mini`
+   - Default models: `grok-beta`, `grok-2-latest`
 
 ### Setting Up
 
