@@ -172,7 +172,17 @@ export class LLMProviderBase {
     content: string
   ): LLMResponse {
     try {
-      const parsed = JSON.parse(content)
+      // Remove markdown code blocks if present (```json ... ``` or ``` ... ```)
+      let cleanedContent = content.trim()
+      if (cleanedContent.startsWith('```')) {
+        // Remove opening ```json or ```
+        cleanedContent = cleanedContent.replace(/^```(?:json)?\s*\n?/, '')
+        // Remove closing ```
+        cleanedContent = cleanedContent.replace(/\n?```\s*$/, '')
+        cleanedContent = cleanedContent.trim()
+      }
+
+      const parsed = JSON.parse(cleanedContent)
 
       if (!parsed.translation) {
         console.warn('Parsed response missing translation field:', parsed)
@@ -181,7 +191,7 @@ export class LLMProviderBase {
 
       return parsed
     } catch (error) {
-      console.warn('Failed to parse JSON response:', error)
+      console.warn('Failed to parse JSON response:', error, 'Raw content:', content)
       if (!content) {
         throw new Error('Empty response received from API')
       }
@@ -189,20 +199,37 @@ export class LLMProviderBase {
     }
   }
 
-  protected handleAPIError(
+  protected async handleAPIError(
     response: Response,
     providerName: string
-  ): never {
+  ): Promise<never> {
     let errorMessage = `${providerName} API error`
+    let errorDetails = ''
+
+    // Try to get error details from response body
+    try {
+      const errorBody = await response.json()
+      errorDetails = JSON.stringify(errorBody)
+      console.error(`${providerName} API Error Response:`, errorBody)
+    } catch {
+      try {
+        errorDetails = await response.text()
+        console.error(`${providerName} API Error Text:`, errorDetails)
+      } catch {
+        // Ignore if we can't read the body
+      }
+    }
 
     if (response.status === 401) {
       errorMessage = 'Invalid API key. Please check your settings.'
     } else if (response.status === 429) {
       errorMessage = 'Rate limit exceeded. Please try again later.'
+    } else if (response.status === 400) {
+      errorMessage = `${providerName} Bad Request: ${errorDetails || response.statusText}`
     } else if (response.status >= 500) {
       errorMessage = 'Server error. Please try again later.'
     } else {
-      errorMessage = `${providerName} API error: ${response.status} ${response.statusText}`
+      errorMessage = `${providerName} API error: ${response.status} ${response.statusText}${errorDetails ? ' - ' + errorDetails : ''}`
     }
 
     throw new Error(errorMessage)
@@ -303,7 +330,7 @@ class GroqProvider extends LLMProviderBase {
         }
 
         if (!response.ok) {
-          this.handleAPIError(response, 'Groq')
+          await this.handleAPIError(response, 'Groq')
         }
 
         const data = await this.getResponseBody(response)
@@ -372,14 +399,24 @@ class GeminiProvider extends LLMProviderBase {
         },
       }
 
+      // Gemini REST API requires system_instruction in object format with parts array
       if (systemPrompt) {
-        body.systemInstruction = systemPrompt
+        body.system_instruction = {
+          parts: [
+            {
+              text: systemPrompt,
+            },
+          ],
+        }
       }
 
       const url = new URL(endpoint)
       url.searchParams.set('key', this.config.apiKey)
 
       try {
+        console.log(`[Gemini] Sending request to: ${url.toString().replace(this.config.apiKey, 'API_KEY_HIDDEN')}`)
+        console.log(`[Gemini] Model: ${model}, Body:`, JSON.stringify(body, null, 2).substring(0, 500))
+
         const response = await this.fetchWithTimeout(
           url.toString(),
           {
@@ -391,6 +428,8 @@ class GeminiProvider extends LLMProviderBase {
           signal
         )
 
+        console.log(`[Gemini] Response status: ${response.status}`)
+
         if (response.status === 429 && i < modelsToTry.length - 1) {
           // Rate limited, try next model after a short delay
           console.warn(`Gemini rate limited on ${model}, trying fallback...`)
@@ -399,18 +438,21 @@ class GeminiProvider extends LLMProviderBase {
         }
 
         if (!response.ok) {
-          this.handleAPIError(response, 'Gemini')
+          await this.handleAPIError(response, 'Gemini')
         }
 
         const data = await this.getResponseBody(response)
+        console.log(`[Gemini] Response data:`, JSON.stringify(data).substring(0, 500))
         const content = data.candidates?.[0]?.content?.parts?.[0]?.text || ''
 
         if (!content) {
           throw new Error('No content received from API')
         }
 
+        console.log(`[Gemini] Content length: ${content.length}`)
         return this.parseResponse(content)
       } catch (error) {
+        console.error(`[Gemini] Error in try block:`, error)
         lastError = error instanceof Error ? error : new Error(String(error))
         if (i >= modelsToTry.length - 1 || i >= MAX_RATE_LIMIT_RETRIES) {
           throw lastError
@@ -453,6 +495,9 @@ class CerebrasProvider extends LLMProviderBase {
       const model = modelsToTry[i]
 
       try {
+        console.log(`[Cerebras] Sending request to: ${endpoint}`)
+        console.log(`[Cerebras] Model: ${model}`)
+
         const response = await this.fetchWithTimeout(
           endpoint,
           {
@@ -480,6 +525,8 @@ class CerebrasProvider extends LLMProviderBase {
           signal
         )
 
+        console.log(`[Cerebras] Response status: ${response.status}`)
+
         if (response.status === 429 && i < modelsToTry.length - 1) {
           // Rate limited, try next model after a short delay
           console.warn(`Cerebras rate limited on ${model}, trying fallback...`)
@@ -488,7 +535,7 @@ class CerebrasProvider extends LLMProviderBase {
         }
 
         if (!response.ok) {
-          this.handleAPIError(response, 'Cerebras')
+          await this.handleAPIError(response, 'Cerebras')
         }
 
         const data = await this.getResponseBody(response)
@@ -561,7 +608,7 @@ class OpenAIProvider extends LLMProviderBase {
     )
 
     if (!response.ok) {
-      this.handleAPIError(response, 'OpenAI')
+      await this.handleAPIError(response, 'OpenAI')
     }
 
     const data = await this.getResponseBody(response)
@@ -624,7 +671,7 @@ class GrokProvider extends LLMProviderBase {
     )
 
     if (!response.ok) {
-      this.handleAPIError(response, 'Grok')
+      await this.handleAPIError(response, 'Grok')
     }
 
     const data = await this.getResponseBody(response)
