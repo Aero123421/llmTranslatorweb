@@ -60,7 +60,8 @@ export default function TranslationInterface() {
   const isMountedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const scrollAreaRef = useRef<HTMLDivElement | null>(null)
-  const scrollTopRef = useRef<number | null>(null)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+  const scrollTopRef = useRef<{ viewport: number | null; main: number | null; document: number | null } | null>(null)
   const panelHeightClass = "min-h-[320px] md:min-h-[520px]"
 
   const settings = useSettingsStore()
@@ -83,9 +84,19 @@ export default function TranslationInterface() {
     return scrollAreaRef.current?.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement | null
   }
 
+  const getMainScrollContainer = () => {
+    return rootRef.current?.closest('main') as HTMLElement | null
+  }
+
   const captureScrollPosition = () => {
     const viewport = getScrollViewport()
-    if (viewport) scrollTopRef.current = viewport.scrollTop
+    const main = getMainScrollContainer()
+    const doc = typeof document !== 'undefined' ? document.scrollingElement : null
+    scrollTopRef.current = {
+      viewport: viewport ? viewport.scrollTop : null,
+      main: main ? main.scrollTop : null,
+      document: doc ? doc.scrollTop : null,
+    }
   }
 
   useLayoutEffect(() => {
@@ -96,9 +107,14 @@ export default function TranslationInterface() {
   }, [sourceText])
 
   useLayoutEffect(() => {
+    const saved = scrollTopRef.current
+    if (!saved) return
     const viewport = getScrollViewport()
-    if (!viewport || scrollTopRef.current === null) return
-    viewport.scrollTop = scrollTopRef.current
+    const main = getMainScrollContainer()
+    const doc = typeof document !== 'undefined' ? document.scrollingElement : null
+    if (viewport && saved.viewport !== null) viewport.scrollTop = saved.viewport
+    if (main && saved.main !== null) main.scrollTop = saved.main
+    if (doc && saved.document !== null) doc.scrollTop = saved.document
     scrollTopRef.current = null
   }, [sourceText, targetText, response])
 
@@ -317,7 +333,7 @@ export default function TranslationInterface() {
   if (!mounted) return null
 
   return (
-    <div className="flex flex-col h-full bg-background relative overflow-hidden" aria-busy={loading}>
+    <div ref={rootRef} className="flex flex-col h-full bg-background relative overflow-hidden" aria-busy={loading}>
       <div ref={scrollAreaRef} className="flex-1 w-full min-h-0">
         <ScrollArea className="h-full">
           <div className="pt-0 px-4 pb-24 md:p-12 w-full max-w-[1600px] mx-auto flex flex-col gap-6 md:gap-12">
@@ -357,7 +373,7 @@ export default function TranslationInterface() {
             </div>
 
             {/* Middle Action Bridge */}
-            <div className="flex lg:flex-col items-center justify-center py-0 my-[-2rem] translate-y-12 lg:translate-y-0 lg:my-0 lg:py-0 h-full lg:min-h-[300px] z-10 relative pointer-events-none lg:sticky lg:top-1/2 lg:-translate-y-1/2">
+            <div className="flex lg:flex-col items-center justify-center lg:items-start lg:justify-start py-0 my-[-2rem] translate-y-12 lg:translate-y-0 lg:my-0 lg:py-0 lg:pt-10 lg:h-auto lg:min-h-[300px] z-10 relative pointer-events-none lg:sticky lg:top-24">
               <div className="relative group pointer-events-auto">
                 {/* Decorative background glow */}
                 <div className={`absolute -inset-4 bg-gradient-to-tr from-primary/40 to-blue-400/40 rounded-full blur-2xl opacity-0 transition-all duration-1000 group-hover:opacity-100 ${sourceText.trim() && !loading ? 'opacity-50 animate-pulse' : ''}`} />
