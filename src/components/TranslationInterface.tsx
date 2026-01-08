@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -59,6 +59,7 @@ export default function TranslationInterface() {
   const translationControllerRef = useRef<AbortController | null>(null)
   const isMountedRef = useRef(true)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const scrollTopRef = useRef<number | null>(null)
 
   const settings = useSettingsStore()
   const addHistoryItem = useHistoryStore((state) => state.addHistoryItem)
@@ -76,12 +77,35 @@ export default function TranslationInterface() {
     }
   }, [])
 
-  useEffect(() => {
+  const getScrollViewport = () => {
+    const root = textareaRef.current?.closest('[data-slot="scroll-area"]') as HTMLElement | null
+    return root?.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement | null
+  }
+
+  const captureScrollPosition = () => {
+    const viewport = getScrollViewport()
+    if (viewport) scrollTopRef.current = viewport.scrollTop
+  }
+
+  useLayoutEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
       textareaRef.current.style.height = `${Math.max(300, textareaRef.current.scrollHeight)}px`
     }
+    const viewport = getScrollViewport()
+    if (viewport && scrollTopRef.current !== null) {
+      viewport.scrollTop = scrollTopRef.current
+      scrollTopRef.current = null
+    }
   }, [sourceText])
+
+  useLayoutEffect(() => {
+    const viewport = getScrollViewport()
+    if (viewport && scrollTopRef.current !== null) {
+      viewport.scrollTop = scrollTopRef.current
+      scrollTopRef.current = null
+    }
+  }, [targetText, response])
 
   useEffect(() => {
     setLocalSourceLanguage(settings.sourceLanguage)
@@ -189,6 +213,7 @@ export default function TranslationInterface() {
 
   const handleTranslate = async () => {
     if (!sourceText.trim() || loading) return
+    captureScrollPosition()
     setIsSubmitted(true)
     setLoading(true)
     setResponse(null)
@@ -202,6 +227,7 @@ export default function TranslationInterface() {
         p.translateText(sourceText, localSourceLanguage, localTargetLanguage, controller.signal)
       )
       if (!isMountedRef.current) return
+      captureScrollPosition()
       setTargetText(translatedText.trim())
       setResponse({ translation: translatedText.trim(), original: sourceText })
       setLoading(false)
@@ -226,6 +252,7 @@ export default function TranslationInterface() {
 
   const handleGranularAnalyze = async (type: 'vocabulary' | 'grammar' | 'nuance') => {
     if (!response?.translation || analyzingType) return
+    captureScrollPosition()
     setAnalyzingType(type)
     const controller = new AbortController()
     translationControllerRef.current = controller
@@ -251,6 +278,7 @@ export default function TranslationInterface() {
   }
 
   const handleClear = () => {
+    captureScrollPosition()
     setSourceText('')
     setTargetText('')
     setResponse(null)
@@ -327,7 +355,7 @@ export default function TranslationInterface() {
                 {sourceText.trim() && <SpeakerButtons text={sourceText} lang={localSourceLanguage} />}
               </div>
               <div className="relative rounded-[2.5rem] border transition-all duration-500 bg-card border-primary/20 shadow-xl shadow-primary/5">
-                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => setSourceText(e.target.value)} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed min-h-[200px] md:min-h-[300px]" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
+                <Textarea ref={textareaRef} value={sourceText} onChange={(e) => { captureScrollPosition(); setSourceText(e.target.value) }} placeholder="翻訳したいテキストを入力してください..." className="w-full bg-transparent border-none focus-visible:ring-0 resize-none font-medium p-6 md:p-10 text-base md:text-lg leading-relaxed min-h-[200px] md:min-h-[300px]" onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); handleTranslate(); } }} />
                 <div className="absolute bottom-6 right-8 md:bottom-8 md:right-10 text-[10px] font-black text-muted-foreground/20 uppercase tracking-widest">{sourceText.length} 文字</div>
               </div>
             </div>
